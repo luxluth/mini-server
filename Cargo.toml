@@ -1,0 +1,16 @@
+[package]
+name = "mini-server"
+version = "0.0.1"
+edition = "2021"
+description = "The mini web server"
+license = "MIT"
+categories = [
+  "web-programming",
+  "web-programming::http-server",
+  "network-programming",
+]
+readme = "README.md"
+authors = ["luxluth <delphin.blehoussi93@gmail.com>"]
+keywords = ["web-server", "server", "http", "library", "web"]
+repository = "https://github.com/luxluth/mini-server"
+homepage = "https://github.com/luxluth/mini-server#readme"
