@@ -44,12 +44,6 @@ pub const CRLF: &str = "\r\n";
 ///
 /// ## Note
 /// > The max_buffer is configurable when configurating a new server instance
-/// ```rust
-/// use mini_server::*;
-///
-/// let mut app = MiniServer::new("localhost", 8000);
-/// app.set_buffer_to(MAX_BUFFER * 2);
-/// ```
 pub const MAX_BUFFER: usize = 16384;
 
 /// The `HTTPRequest` struct represents an HTTP request received by
@@ -375,12 +369,13 @@ impl HTTPResponse {
     /// the status line, headers, and body. It returns the
     /// formatted HTTP response as a vector of bytes (`Vec<u8>`).
     /// ```rust
-    /// use your_web_server_library::HTTPResponse;
+    /// use mini_server::HTTPResponse;
     /// fn get_raw_response(response: &mut HTTPResponse) -> Vec<u8> {
     ///     let raw_response = response.raw();
     ///
     ///     // Accessing the raw HTTP response
     ///     println!("Raw Response: {:?}", raw_response);
+    ///     raw_response
     /// }
     /// ```
     pub fn raw(&mut self) -> Vec<u8> {
@@ -486,6 +481,13 @@ impl SoftListener {
     }
 }
 
+pub enum ServerKind {
+    SIMPLE,
+    HTTP,
+    // TODO: UDP,
+    // TODO: WEBSOCKET,
+}
+
 /// The mini web server
 ///
 /// ## Example
@@ -501,10 +503,15 @@ impl SoftListener {
 /// }
 ///
 /// fn main() {
-///     let mut app = MiniServer::new("localhost", 8000);
-///     app.get("/", hello);
-///     // Now just run it;
-///     // app.run();
+///     let server = MiniServer::init("localhost", 8000, ServerKind::HTTP);
+///     match server {
+///         MatchingServer::HTTP(mut app) => {
+///             app.get("/", hello);
+///             // Now just run it;
+///             // app.run();
+///         }
+///         _ => {}
+///     }
 /// }
 /// ```
 /// The miniserver's api is simple
@@ -516,23 +523,105 @@ pub struct MiniServer {
     on_ready: Option<SoftListener>,
     on_shutdown: Option<SoftListener>, // TODO: Implement on_shutdown
     max_buffer: Option<usize>,
+    // TODO: Adding multiple purposes for the server
 }
 
-impl Default for MiniServer {
-    fn default() -> Self {
-        Self {
-            addr: "127.0.0.1",
-            port: 6969,
-            paths: Vec::new(),
-            listeners: Vec::new(),
-            on_ready: None,
-            on_shutdown: None,
-            max_buffer: None,
+pub trait Server<U, V> {
+    fn handle_request(&mut self, stream: U, req: V);
+    fn set_buffer_to(&mut self, size: usize);
+    fn run(&mut self);
+    fn on_ready(&mut self, handler: SoftEventHandler);
+    fn on_shutdown(&mut self, handler: SoftEventHandler);
+}
+
+type Request = Vec<u8>;
+type Response = Vec<u8>;
+
+pub struct HTTPServer {
+    addr: &'static str,
+    port: u32,
+    paths: Vec<Path>,
+    listeners: Vec<Listener>,
+    on_ready: Option<SoftListener>,
+    on_shutdown: Option<SoftListener>, // TODO: Implement on_shutdown
+    max_buffer: Option<usize>,
+}
+
+impl Server<TcpStream, HTTPRequest> for HTTPServer {
+    fn set_buffer_to(&mut self, size: usize) {
+        self.max_buffer = Some(size);
+    }
+
+    fn on_ready(&mut self, handler: SoftEventHandler) {
+        self.on_ready = Some(SoftListener::new(handler));
+    }
+
+    fn on_shutdown(&mut self, handler: SoftEventHandler) {
+        self.on_shutdown = Some(SoftListener::new(handler));
+    }
+
+    fn handle_request(&mut self, mut stream: TcpStream, req: HTTPRequest) {
+        let mut handled = false;
+        for path in &self.paths {
+            if path.method == req.method && req.path == path.name {
+                let mut response = path.handle_request(req.clone());
+                for listener in &self.listeners {
+                    listener.notify(&req, &mut response);
+                }
+                let _ = stream.write(response.raw().as_slice());
+                self.log(&req, &response);
+                handled = true;
+                break;
+            }
+        }
+        if !handled {
+            let mut response = HTTPResponse::default();
+            response.set_status(404);
+
+            let data: String = format!(
+                "Unreachable path `{:?} - {}`. Resource NOT FOUND",
+                req.method, req.path
+            );
+
+            let data_bytes: Vec<u8> = data.into_bytes();
+            response.set_body(data_bytes);
+            for listener in &self.listeners {
+                listener.notify(&req, &mut response);
+            }
+            let _ = stream.write(response.raw().as_slice());
+            self.log(&req, &response);
+        }
+    }
+
+    fn run(&mut self) {
+        let listener = TcpListener::bind(format!("{}:{}", self.addr, self.port)).unwrap();
+        if let Some(ready_fn) = &self.on_ready {
+            ready_fn.notify();
+        }
+
+        println!("=== miniserver on http://{}:{}", self.addr, self.port);
+
+        for stream in listener.incoming() {
+            let mut max_buffer = MAX_BUFFER;
+            if let Some(mxb) = self.max_buffer {
+                max_buffer = mxb;
+            }
+            match stream {
+                Ok(mut stream) => {
+                    let mut data = vec![0; max_buffer];
+                    let _ = stream.read(&mut data);
+                    let request = parse_http_req(vec_to_string(data));
+                    self.handle_request(stream, request)
+                }
+                Err(e) => {
+                    println!("..error: {e}")
+                }
+            }
         }
     }
 }
 
-impl MiniServer {
+impl HTTPServer {
     pub fn new(addr: &'static str, port: u32) -> Self {
         Self {
             addr,
@@ -542,6 +631,93 @@ impl MiniServer {
             on_ready: None,
             on_shutdown: None,
             max_buffer: None,
+        }
+    }
+
+    pub fn get(&mut self, path: &'static str, handler: RequestHandler) {
+        self.paths.push(Path::new(path, handler, HTTPMethod::GET));
+    }
+
+    pub fn post(&mut self, path: &'static str, handler: RequestHandler) {
+        self.paths.push(Path::new(path, handler, HTTPMethod::POST));
+    }
+
+    fn log(&mut self, req: &HTTPRequest, resp: &HTTPResponse) {
+        println!(
+            "..{:?} {} {} - {}",
+            req.method, resp.status, resp.status_text, req.raw_path
+        );
+    }
+
+    pub fn on_any(&mut self, handler: EventHandler) {
+        self.listeners.push(Listener::new(handler));
+    }
+}
+
+pub struct SimpleServer {
+    addr: &'static str,
+    port: u32,
+    // listeners: Vec<Listener>,
+    on_ready: Option<SoftListener>,
+    on_shutdown: Option<SoftListener>, // TODO: Implement on_shutdown
+    max_buffer: Option<usize>,
+}
+
+impl Server<TcpStream, Request> for SimpleServer {
+    fn handle_request(&mut self, stream: TcpStream, req: Request) {
+        todo!()
+    }
+
+    fn set_buffer_to(&mut self, size: usize) {
+        todo!()
+    }
+
+    fn run(&mut self) {
+        todo!()
+    }
+
+    fn on_ready(&mut self, handler: SoftEventHandler) {
+        todo!()
+    }
+
+    fn on_shutdown(&mut self, handler: SoftEventHandler) {
+        todo!()
+    }
+}
+
+impl SimpleServer {
+    pub fn new(addr: &'static str, port: u32) -> Self {
+        Self {
+            addr,
+            port,
+            on_ready: None,
+            on_shutdown: None,
+            max_buffer: None,
+        }
+    }
+
+    // fn log(&mut self, req: &HTTPRequest, resp: &HTTPResponse) {
+    //     println!(
+    //         "..{:?} {} {} - {}",
+    //         req.method, resp.status, resp.status_text, req.raw_path
+    //     );
+    // }
+
+    // pub fn on_any(&mut self, handler: EventHandler) {
+    //     self.listeners.push(Listener::new(handler));
+    // }
+}
+
+pub enum MatchingServer {
+    HTTP(HTTPServer),
+    SIMPLE(SimpleServer),
+}
+
+impl MiniServer {
+    pub fn init(addr: &'static str, port: u32, kind: ServerKind) -> MatchingServer {
+        match kind {
+            ServerKind::SIMPLE => MatchingServer::SIMPLE(SimpleServer::new(addr, port)),
+            ServerKind::HTTP => MatchingServer::HTTP(HTTPServer::new(addr, port)),
         }
     }
 
