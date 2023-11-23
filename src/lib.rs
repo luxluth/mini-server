@@ -402,20 +402,39 @@ impl HTTPResponse {
     }
 }
 
-type RequestHandler = fn(HTTPRequest) -> HTTPResponse;
-type EventHandler = fn(&HTTPRequest, &mut HTTPResponse);
-type SoftEventHandler = fn();
+/// RequestHandler type is a function type that defines the signature for handling HTTP requests.
+/// It takes an `HTTPRequest` as a parameter and returns an `HTTPResponse`
+pub type RequestHandler = fn(HTTPRequest) -> HTTPResponse;
 
+/// EventHandler type is a function type that defines the signature for handling events triggered
+/// by HTTP requests. It takes references to an `HTTPRequest` and a mutable `HTTPResponse` as parameters.
+pub type EventHandler = fn(&HTTPRequest, &mut HTTPResponse);
+
+/// The SoftEventHandler type is a function type that defines the signature for handling soft events,
+/// typically without specific request or response parameters.
+pub type SoftEventHandler = fn();
+
+/// The HTTPMethod enum represents the HTTP methods that can be used in HTTP requests.
+/// Each variant corresponds to a standard HTTP method.
 #[derive(Debug, PartialEq, Clone)]
 pub enum HTTPMethod {
+    /// Used to establish a network connection to a resource.
     CONNECT,
+    /// Requests that a resource be removed.
     DELETE,
+    /// Requests a representation of a resource.
     GET,
+    /// Requests the headers of a resource without the body.
     HEAD,
+    /// Describes the communication options for the target resource.
     OPTIONS,
+    /// Applies partial modifications to a resource.
     PATCH,
+    /// Submits data to be processed to a specified resource.
     POST,
+    /// Updates a resource or creates a new resource if it does not exist.
     PUT,
+    /// Performs a message loop-back test along the path to the target resource.
     TRACE,
 }
 
