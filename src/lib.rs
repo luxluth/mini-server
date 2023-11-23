@@ -504,13 +504,10 @@ pub enum ServerKind {
 ///
 /// fn main() {
 ///     let server = MiniServer::init("localhost", 8000, ServerKind::HTTP);
-///     match server {
-///         MatchingServer::HTTP(mut app) => {
-///             app.get("/", hello);
-///             // Now just run it;
-///             // app.run();
-///         }
-///         _ => {}
+///     if let MatchingServer::HTTP(mut app) = server {
+///         app.get("/", idx);
+///         // now run it
+///         // app.run();
 ///     }
 /// }
 /// ```
