@@ -2,18 +2,76 @@ use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 
+/// `CRLF` represents the Carriage Return (CR) and Line Feed (LF)
+/// characters combined ("\r\n"). It is commonly used as the
+/// end-of-line sequence in HTTP requests and responses.
+///
+/// `CRLF` is utilized to signify the end of a line in HTTP messages,
+/// ensuring compatibility with the HTTP protocol.
+///
+/// ```rust
+/// use mini_server::CRLF;
+///
+/// let http_line = format!("--- boundry{}{}", CRLF, CRLF);
+/// ```
 pub const CRLF: &str = "\r\n";
+
+/// `MAX_BUFFER` defines the maximum size, in bytes, for a request
+/// in your web server. Requests exceeding this size may be rejected or
+/// handled differently based on your server's implementation.
+///
+/// ## Determining the appropriate buffer size
+///
+/// Determining an appropriate value for `MAX_BUFFER` depends on several
+/// factors, including the typical size of requests the web server
+/// expects to handle, the available system resources, and the desired
+/// trade-off between memory usage and potential denial-of-service (DoS)
+/// protection.
+///
+/// Here are some considerations:
+///
+/// 1. Resource Constraints:
+///     Consider the available system memory. Setting MAX_BUFFER too high
+///     might lead to excessive memory usage, especially if the
+///     server handles a large number of concurrent requests.
+///
+/// 2. Denial-of-Service (DoS) Protection:
+///     A smaller MAX_BUFFER can provide a level of protection against
+///     certain types of DoS attacks that involve sending large,
+///     resource-consuming requests. However, it's essential to strike
+///     a balance to avoid false positives or impacting legitimate
+///     requests.
+///
+/// ## Note
+/// > The max_buffer is configurable when configurating a new server instance
+/// ```rust
+/// use mini_server::*;
+///
+/// let mut app = MiniServer::new("localhost", 8000);
+/// app.set_buffer_to(MAX_BUFFER * 2);
+/// ```
 pub const MAX_BUFFER: usize = 16384;
 
+/// The `HTTPRequest` struct represents an HTTP request received by
+/// the web server. It encapsulates various components of an HTTP request,
+/// including the HTTP method, request path, headers, and body.
 #[derive(Debug, Clone)]
 pub struct HTTPRequest {
+    /// The HTTP method used in the request (e.g., GET, POST).
     pub method: HTTPMethod,
+    /// The decoded path portion of the request URL.
     pub path: String,
+    /// The raw, percent-encoded path from the request URL.
     pub raw_path: String,
+    /// A collection of URL parameters parsed from the request.
     pub params: URLSearchParams,
+    /// The version of the HTTP protocol used in the request (e.g., "1.1").
     pub http_version: String,
+    /// A collection of HTTP headers included in the request.
     pub headers: Headers,
-    pub body: String,
+    /// The body of the HTTP request. (Note: Consider changing body to a sequence of bytes (***`Vec<u8>`***)
+    /// for more flexibility and efficiency.)
+    pub body: String, // TODO: Change body to a sequence of bytes `Vec<u8>`
 }
 
 impl Default for HTTPRequest {
@@ -30,28 +88,41 @@ impl Default for HTTPRequest {
     }
 }
 
+/// The `URLSearchParams` type alias represents a collection of URL parameters parsed from an HTTP request's
+/// query string. It is implemented as a HashMap<String, String> where keys are parameter names, and values
+/// are parameter values.
 pub type URLSearchParams = HashMap<String, String>;
+
+/// The `Headers` type alias represents a collection of HTTP headers in key-value pairs. It is implemented
+/// as a HashMap<String, String>, where keys are header names, and values are header values.
 pub type Headers = HashMap<String, String>;
 
+/// The parse_path function takes a string representing an HTTP request path and extracts the path and URL
+/// parameters (if any) from it. It returns a tuple containing the path and a URLSearchParams
+/// `(HashMap<String, String>)` representing the parsed URL parameters.
 pub fn parse_path(data: String) -> (String, URLSearchParams) {
-    let mut params = HashMap::new();
-
     let split_data = data.split_once('?');
     if split_data.is_none() {
-        (data, params)
+        (data, HashMap::new())
     } else {
         let (ph, pr) = split_data.unwrap();
-        let all_params: Vec<&str> = pr.split('&').collect();
-        for elem in all_params {
-            if let Some((field, value)) = elem.split_once('=') {
-                params.insert(field.to_string(), value.to_string());
-            }
-        }
+        let params: URLSearchParams = pr
+            .split('&')
+            .filter_map(|param| {
+                let mut parts = param.split('=');
+                let key = parts.next()?.to_string();
+                let value = parts.next()?.to_string();
+                Some((key, value))
+            })
+            .collect();
 
         (ph.to_string(), params)
     }
 }
 
+/// The parse_http_req function takes a string representing an entire HTTP request and parses
+/// it into a `HTTPRequest` struct, extracting information such as the HTTP method, path,
+/// headers, and body.
 pub fn parse_http_req(data: String) -> HTTPRequest {
     // let mut req_raw_map = HashMap::<String, String>::new();
     let mut req = HTTPRequest::default();
@@ -113,6 +184,9 @@ fn get_method(raw: &str) -> HTTPMethod {
     }
 }
 
+/// The vec_to_string function converts a vector of bytes (**`Vec<u8>`**) into a UTF-8 encoded string.
+/// It handles the conversion and gracefully handles errors, returning an empty string if the
+/// conversion fails.
 pub fn vec_to_string(bytes: Vec<u8>) -> String {
     if let Ok(utf8_string) = String::from_utf8(bytes) {
         utf8_string
@@ -122,12 +196,37 @@ pub fn vec_to_string(bytes: Vec<u8>) -> String {
     }
 }
 
+/// The `HTTPResponse` struct represents an HTTP response that the web server can send to clients.
+/// It encapsulates various components of an HTTP response, including the response body, headers,
+/// status code, status text, and the HTTP version.
+///
+/// ```rust
+/// use mini_server::{HTTPResponse, Headers};
+///
+/// fn create_http_response() -> HTTPResponse {
+///     let mut headers = Headers::new();
+///     headers.insert("Content-Type".into(), "text/plain".into());
+///
+///     HTTPResponse {
+///         body: b"Hello, World!".to_vec(),
+///         headers,
+///         status: 200,
+///         status_text: "OK".to_string(),
+///         http_version: "1.1".to_string(),
+///     }
+/// }
+/// ```
 #[derive(Debug)]
 pub struct HTTPResponse {
+    /// The response body as a vector of bytes.
     pub body: Vec<u8>,
+    /// A collection of HTTP headers included in the response.
     pub headers: Headers,
+    ///  The HTTP status code indicating the outcome of the request.
     pub status: u16,
+    /// The human-readable status text associated with the status code.
     pub status_text: String,
+    /// The version of the HTTP protocol used for the response.
     pub http_version: String,
 }
 
@@ -150,20 +249,31 @@ impl Default for HTTPResponse {
 }
 
 impl HTTPResponse {
+    /// Get a new HTTPResponse struct
     pub fn new() -> Self {
         HTTPResponse::default()
     }
 
+    /// Allows updating the body of an HTTPResponse instance
+    /// with a new vector of bytes (`Vec<u8>`). Additionally, it automatically
+    /// updates the "Content-Length" header to reflect the length of the new body.
     pub fn set_body(&mut self, body: Vec<u8>) {
         self.body = body;
         self.headers
             .insert("Content-Length".to_string(), self.body.len().to_string());
     }
 
+    /// Update the headers of an HTTPResponse instance with a new set of headers
+    /// provided as a Headers collection.
     pub fn set_headers(&mut self, headers: Headers) {
         for (key, value) in headers {
             self.headers.insert(key, value);
         }
+    }
+
+    /// Insert/Update the `HTTPResponse` header
+    pub fn set_header(&mut self, k: &str, v: &str) {
+        self.headers.insert(k.into(), v.into());
     }
 
     fn apply_status(&mut self, status: u16, text: &str) {
@@ -171,6 +281,9 @@ impl HTTPResponse {
         self.status_text = text.to_string();
     }
 
+    /// The set_status method allows setting the HTTP status code for an HTTPResponse instance.
+    /// It updates both the numeric status code (status) and the associated human-readable
+    /// status text.
     pub fn set_status(&mut self, status: u16) {
         match status {
             100 => self.apply_status(status, "Continue"),
@@ -245,6 +358,7 @@ impl HTTPResponse {
         }
     }
 
+    /// Set the HTTPResponse version (e.g. '1.1')
     pub fn set_version(&mut self, version: String) {
         self.http_version = version;
     }
@@ -257,6 +371,18 @@ impl HTTPResponse {
         headers
     }
 
+    /// The raw method generates the raw representation of an HTTP response, including
+    /// the status line, headers, and body. It returns the
+    /// formatted HTTP response as a vector of bytes (`Vec<u8>`).
+    /// ```rust
+    /// use your_web_server_library::HTTPResponse;
+    /// fn get_raw_response(response: &mut HTTPResponse) -> Vec<u8> {
+    ///     let raw_response = response.raw();
+    ///
+    ///     // Accessing the raw HTTP response
+    ///     println!("Raw Response: {:?}", raw_response);
+    /// }
+    /// ```
     pub fn raw(&mut self) -> Vec<u8> {
         let mut bytes = format!(
             "HTTP/{version} {status} {status_text}{CRLF}{headers}{CRLF}", // dont forget {body}{CRLF}
@@ -341,13 +467,36 @@ impl SoftListener {
     }
 }
 
+/// The mini web server
+///
+/// ## Example
+///
+/// ```rust
+/// use mini_server::*;
+///
+/// fn hello(_req: HTTPRequest) -> HTTPResponse {
+///     let mut response = HTTPResponse::default();
+///     response.set_body("Hello World!".into());
+///
+///     response
+/// }
+///
+/// fn main() {
+///     let mut app = MiniServer::new("localhost", 8000);
+///     app.get("/", hello);
+///     // Now just run it;
+///     // app.run();
+/// }
+/// ```
+/// The miniserver's api is simple
 pub struct MiniServer {
     addr: &'static str,
     port: u32,
     paths: Vec<Path>,
     listeners: Vec<Listener>,
     on_ready: Option<SoftListener>,
-    on_shutdown: Option<SoftListener>, // TODO(#1): Implement on_shutdown
+    on_shutdown: Option<SoftListener>, // TODO: Implement on_shutdown
+    max_buffer: Option<usize>,
 }
 
 impl Default for MiniServer {
@@ -359,6 +508,7 @@ impl Default for MiniServer {
             listeners: Vec::new(),
             on_ready: None,
             on_shutdown: None,
+            max_buffer: None,
         }
     }
 }
@@ -372,7 +522,12 @@ impl MiniServer {
             listeners: Vec::new(),
             on_ready: None,
             on_shutdown: None,
+            max_buffer: None,
         }
+    }
+
+    pub fn set_buffer_to(&mut self, size: usize) {
+        self.max_buffer = Some(size);
     }
 
     pub fn get(&mut self, path: &'static str, handler: RequestHandler) {
@@ -444,9 +599,13 @@ impl MiniServer {
         println!("=== miniserver on http://{}:{}", self.addr, self.port);
 
         for stream in listener.incoming() {
+            let mut max_buffer = MAX_BUFFER;
+            if let Some(mxb) = self.max_buffer {
+                max_buffer = mxb;
+            }
             match stream {
                 Ok(mut stream) => {
-                    let mut data = vec![0; MAX_BUFFER];
+                    let mut data = vec![0; max_buffer];
                     let _ = stream.read(&mut data);
                     let request = parse_http_req(vec_to_string(data));
                     self.handle_request(stream, request)
