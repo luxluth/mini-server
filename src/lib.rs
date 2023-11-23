@@ -534,8 +534,8 @@ pub trait Server<U, V> {
     fn on_shutdown(&mut self, handler: SoftEventHandler);
 }
 
-type Request = Vec<u8>;
-type Response = Vec<u8>;
+pub type Request = Vec<u8>;
+pub type Response = Vec<u8>;
 
 pub struct HTTPServer {
     addr: &'static str,
