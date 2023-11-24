@@ -185,7 +185,7 @@ pub fn vec_to_string(bytes: Vec<u8>) -> String {
     if let Ok(utf8_string) = String::from_utf8(bytes) {
         utf8_string
     } else {
-        println!("..error: Unable to convert to utf8");
+        eprintln!("..error: Unable to convert to utf8");
         String::new()
     }
 }
@@ -436,9 +436,15 @@ pub enum HTTPMethod {
 }
 
 pub struct Path {
-    name: &'static str,
-    handler: RequestHandler,
-    method: HTTPMethod,
+    pub name: &'static str,
+    pub handler: RequestHandler,
+    pub method: HTTPMethod,
+}
+
+impl PartialEq for Path {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.method == other.method
+    }
 }
 
 pub struct Listener {
@@ -490,7 +496,20 @@ pub enum ServerKind {
     // TODO: WEBSOCKET,
 }
 
-/// The mini server
+pub struct MiniServer {}
+
+pub trait Server<U, V> {
+    fn handle_request(&mut self, stream: U, req: V);
+    fn set_buffer_to(&mut self, size: usize);
+    fn run(&mut self);
+    fn on_ready(&mut self, handler: SoftEventHandler);
+    fn on_shutdown(&mut self, handler: SoftEventHandler);
+}
+
+pub type Request = Vec<u8>;
+pub type Response = Vec<u8>;
+
+/// `HTTPServer`
 ///
 /// ## Example
 ///
@@ -507,25 +526,12 @@ pub enum ServerKind {
 /// fn main() {
 ///     let server = MiniServer::init("localhost", 8000, ServerKind::HTTP);
 ///     if let MatchingServer::HTTP(mut app) = server {
-///         app.get("/", idx);
+///         app.get("/", hello);
 ///         // now run it
 ///         // app.run();
 ///     }
 /// }
 /// ```
-pub struct MiniServer {}
-
-pub trait Server<U, V> {
-    fn handle_request(&mut self, stream: U, req: V);
-    fn set_buffer_to(&mut self, size: usize);
-    fn run(&mut self);
-    fn on_ready(&mut self, handler: SoftEventHandler);
-    fn on_shutdown(&mut self, handler: SoftEventHandler);
-}
-
-pub type Request = Vec<u8>;
-pub type Response = Vec<u8>;
-
 pub struct HTTPServer {
     pub addr: &'static str,
     pub port: u32,
@@ -588,7 +594,7 @@ impl Server<TcpStream, HTTPRequest> for HTTPServer {
             ready_fn.notify();
         }
 
-        println!("=== miniserver on http://{}:{}", self.addr, self.port);
+        eprintln!("=== miniserver on http://{}:{}", self.addr, self.port);
 
         for stream in listener.incoming() {
             let mut max_buffer = MAX_BUFFER;
@@ -603,7 +609,7 @@ impl Server<TcpStream, HTTPRequest> for HTTPServer {
                     self.handle_request(stream, request);
                 }
                 Err(e) => {
-                    println!("..error: {e}")
+                    eprintln!("..error: {e}")
                 }
             }
         }
@@ -623,16 +629,56 @@ impl HTTPServer {
         }
     }
 
+    fn add_path(&mut self, path: Path) {
+        let path_name = path.name;
+        if !self.paths.contains(&path) {
+            self.paths.push(path);
+        } else {
+            eprintln!(
+                "..warn `{}` path redefinition is not allowed. Only the first definition matter",
+                path_name
+            );
+        }
+    }
+
+    pub fn connect(&mut self, path: &'static str, handler: RequestHandler) {
+        self.add_path(Path::new(path, handler, HTTPMethod::CONNECT));
+    }
+
+    pub fn delete(&mut self, path: &'static str, handler: RequestHandler) {
+        self.add_path(Path::new(path, handler, HTTPMethod::DELETE));
+    }
+
     pub fn get(&mut self, path: &'static str, handler: RequestHandler) {
-        self.paths.push(Path::new(path, handler, HTTPMethod::GET));
+        self.add_path(Path::new(path, handler, HTTPMethod::GET));
+    }
+
+    pub fn head(&mut self, path: &'static str, handler: RequestHandler) {
+        self.add_path(Path::new(path, handler, HTTPMethod::HEAD));
+    }
+
+    pub fn options(&mut self, path: &'static str, handler: RequestHandler) {
+        self.add_path(Path::new(path, handler, HTTPMethod::OPTIONS));
+    }
+
+    pub fn patch(&mut self, path: &'static str, handler: RequestHandler) {
+        self.add_path(Path::new(path, handler, HTTPMethod::PATCH));
     }
 
     pub fn post(&mut self, path: &'static str, handler: RequestHandler) {
-        self.paths.push(Path::new(path, handler, HTTPMethod::POST));
+        self.add_path(Path::new(path, handler, HTTPMethod::POST));
+    }
+
+    pub fn put(&mut self, path: &'static str, handler: RequestHandler) {
+        self.add_path(Path::new(path, handler, HTTPMethod::PUT));
+    }
+
+    pub fn trace(&mut self, path: &'static str, handler: RequestHandler) {
+        self.add_path(Path::new(path, handler, HTTPMethod::TRACE));
     }
 
     fn log(&mut self, req: &HTTPRequest, resp: &HTTPResponse) {
-        println!(
+        eprintln!(
             "..{:?} {} {} - {}",
             req.method, resp.status, resp.status_text, req.raw_path
         );
@@ -671,7 +717,7 @@ impl Server<&mut TcpStream, Request> for SimpleServer {
             ready_fn.notify();
         }
 
-        println!("=== miniserver on {}:{}", self.addr, self.port);
+        eprintln!("=== miniserver on {}:{}", self.addr, self.port);
 
         for stream in listener.incoming() {
             let mut max_buffer = MAX_BUFFER;
@@ -685,7 +731,7 @@ impl Server<&mut TcpStream, Request> for SimpleServer {
                     self.handle_request(&mut stream, data);
                 }
                 Err(e) => {
-                    println!("..error: {e}")
+                    eprintln!("..error: {e}")
                 }
             }
         }
