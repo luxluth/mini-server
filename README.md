@@ -1,6 +1,6 @@
 # mini-server
 
-The mini web server
+The mini server
 
 ## Example
 
