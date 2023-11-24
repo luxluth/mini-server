@@ -17,7 +17,7 @@ fn hello(_req: HTTPRequest) -> HTTPResponse {
 fn main() {
     let server = MiniServer::init("localhost", 4221, ServerKind::HTTP);
     if let MatchingServer::HTTP(mut app) = server {
-        app.get("/", idx);
+        app.get("/", hello);
         app.run();
     }
 }
