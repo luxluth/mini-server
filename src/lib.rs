@@ -605,7 +605,7 @@ impl Server<&mut TcpStream, HTTPRequest> for HTTPServer {
                     // let _ = stream.read(&mut data);
                     // let request = parse_http_req(data);
                     // self.handle_request(&mut stream, request);
-                    let mut self_clone = self.clone(); // Clone the server for each thread
+                    let mut self_clone = self.clone();
                     thread::spawn(move || {
                         self_clone.handle_connection(&mut stream);
                     });
@@ -732,7 +732,7 @@ impl Server<&mut TcpStream, Request> for SimpleServer {
             ready_fn.notify();
         }
 
-        eprintln!("=== miniserver on {}:{}", self.addr, self.port);
+        eprintln!("=== miniserver on tcp://{}:{}", self.addr, self.port);
 
         for stream in listener.incoming() {
             let mut max_buffer = MAX_BUFFER;
