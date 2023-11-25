@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Hello from miniserver !</title>
+  </head>
+  <body>
+    <header>
+      <h1>Miniserver</h1>
+    </header>
+    <p id="text">Welcome to the miniserver's world !</p>
+  </body>
+  <style>
+    :root {
+      background: #101010;
+      color: #fff;
+      font-family: system-ui;
+    }
+
+    body,
+    html {
+      height: 100%;
+    }
+
+    body {
+      padding-inline: 5rem;
+      padding-block: 2rem;
+    }
+
+    body header {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    body header h1 {
+      font-size: 5rem;
+    }
+
+    body p#text {
+      text-align: center;
+      font-family: monospace;
+    }
+
+    * {
+      box-sizing: border-box;
+      padding: 0;
+      margin: 0;
+    }
+  </style>
+  <script>
+    const iters = [
+      "Welcome to the miniserver's world !",
+      "Bienvenue dans le monde de miniserver !",
+      "ミニスーファミの世界へようこそ ！",
+    ];
+    let pos = 1;
+    setInterval(() => {
+      text.innerText = iters[pos];
+      pos++;
+      if (pos == iters.length) pos = 0;
+    }, 3e3);
+  </script>
+</html>

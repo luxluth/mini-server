@@ -1,0 +1,8 @@
+[package]
+name = "o-http"
+version = "0.0.1"
+authors = ["luxluth <dephin.blehoussi93@gmail.com>"]
+edition = "2021"
+
+[dependencies]
+mini-server = { path = "../mini-server" }
