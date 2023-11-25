@@ -21,3 +21,11 @@ fn main() {
     }
 }
 ```
+
+## Examples
+
+To run an example:
+
+```bash
+cargo run --example $name
+```
