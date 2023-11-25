@@ -2,7 +2,11 @@
 
 The mini server
 
-## Example
+```bash
+cargo add mini-server
+```
+
+## Basic server
 
 ```rust
 use mini_server::*;
