@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::u8;
 
 /// `CRLF` represents the Carriage Return (CR) and Line Feed (LF)
 /// characters combined ("\r\n"). It is commonly used as the
@@ -65,7 +66,7 @@ pub struct HTTPRequest {
     pub headers: Headers,
     /// The body of the HTTP request. (Note: Consider changing body to a sequence of bytes (***`Vec<u8>`***)
     /// for more flexibility and efficiency.)
-    pub body: String, // TODO: Change body to a sequence of bytes `Vec<u8>`
+    pub body: Vec<u8>,
 }
 
 impl Default for HTTPRequest {
@@ -77,7 +78,7 @@ impl Default for HTTPRequest {
             params: HashMap::new(),
             http_version: String::from("1.1"),
             headers: HashMap::new(),
-            body: String::new(),
+            body: Vec::new(),
         }
     }
 }
@@ -114,26 +115,29 @@ pub fn parse_path(data: String) -> (String, URLSearchParams) {
     }
 }
 
+fn split_head_and_body(data: Vec<u8>) -> (Vec<String>, Vec<u8>) {
+    let data_string_form = vec_to_string(data);
+    let split_at = data_string_form.rfind(format!("{c}{c}", c = CRLF).as_str());
+    if let Some(pos) = split_at {
+        let (head, body) = data_string_form.split_at(pos + (CRLF.len() * 2));
+        let head: Vec<String> = head.split(CRLF).map(|s| s.to_string()).collect();
+
+        (head, body.into())
+    } else {
+        (Vec::new(), Vec::new())
+    }
+}
+
 /// The parse_http_req function takes a string representing an entire HTTP request and parses
 /// it into a `HTTPRequest` struct, extracting information such as the HTTP method, path,
 /// headers, and body.
-pub fn parse_http_req(data: String) -> HTTPRequest {
+pub fn parse_http_req(data: Vec<u8>) -> HTTPRequest {
     // let mut req_raw_map = HashMap::<String, String>::new();
     let mut req = HTTPRequest::default();
-    let data: Vec<&str> = data.split(CRLF).collect();
-    let mut is_body = false;
-    for chunck in data {
+    let (head, body) = split_head_and_body(data);
+    req.body = body;
+    for chunck in head {
         let chunck = chunck.replace(CRLF, "");
-        if chunck.is_empty() {
-            is_body = true;
-            continue;
-        }
-
-        if is_body {
-            req.body += chunck.as_str();
-            continue;
-        }
-
         if chunck.starts_with("GET")
             || chunck.starts_with("HEAD")
             || chunck.starts_with("POST")
@@ -179,15 +183,15 @@ fn get_method(raw: &str) -> HTTPMethod {
 }
 
 /// The vec_to_string function converts a vector of bytes (**`Vec<u8>`**) into a UTF-8 encoded string.
-/// It handles the conversion and gracefully handles errors, returning an empty string if the
-/// conversion fails.
 pub fn vec_to_string(bytes: Vec<u8>) -> String {
-    if let Ok(utf8_string) = String::from_utf8(bytes) {
-        utf8_string
-    } else {
-        eprintln!("..error: Unable to convert to utf8");
-        String::new()
-    }
+    String::from_utf8_lossy(&bytes).into_owned()
+
+    // if let Ok(utf8_string) = String::from_utf8(bytes) {
+    //     utf8_string
+    // } else {
+    //     eprintln!("..error: Unable to convert to utf8");
+    //     String::new()
+    // }
 }
 
 /// The `HTTPResponse` struct represents an HTTP response that the web server can send to clients.
@@ -599,7 +603,7 @@ impl Server<TcpStream, HTTPRequest> for HTTPServer {
                 Ok(mut stream) => {
                     let mut data = vec![0; max_buffer];
                     let _ = stream.read(&mut data);
-                    let request = parse_http_req(vec_to_string(data));
+                    let request = parse_http_req(data);
                     self.handle_request(stream, request);
                 }
                 Err(e) => {
