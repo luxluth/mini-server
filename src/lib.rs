@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+use std::thread;
 use std::u8;
 
 /// `CRLF` represents the Carriage Return (CR) and Line Feed (LF)
@@ -438,7 +439,7 @@ pub enum HTTPMethod {
     /// Performs a message loop-back test along the path to the target resource.
     TRACE,
 }
-
+#[derive(Clone)]
 pub struct Path {
     pub name: &'static str,
     pub handler: RequestHandler,
@@ -451,10 +452,12 @@ impl PartialEq for Path {
     }
 }
 
+#[derive(Clone)]
 pub struct Listener {
     handler: EventHandler,
 }
 
+#[derive(Clone)]
 pub struct SoftListener {
     handler: SoftEventHandler,
 }
@@ -530,6 +533,7 @@ pub type Response = Vec<u8>;
 ///     // app.run();
 /// }
 /// ```
+#[derive(Clone)]
 pub struct HTTPServer {
     pub addr: &'static str,
     pub port: u32,
@@ -540,7 +544,7 @@ pub struct HTTPServer {
     max_buffer: Option<usize>,
 }
 
-impl Server<TcpStream, HTTPRequest> for HTTPServer {
+impl Server<&mut TcpStream, HTTPRequest> for HTTPServer {
     fn set_buffer_to(&mut self, size: usize) {
         self.max_buffer = Some(size);
     }
@@ -553,7 +557,7 @@ impl Server<TcpStream, HTTPRequest> for HTTPServer {
         self.on_shutdown = Some(SoftListener::new(handler));
     }
 
-    fn handle_request(&mut self, mut stream: TcpStream, req: HTTPRequest) {
+    fn handle_request(&mut self, stream: &mut TcpStream, req: HTTPRequest) {
         let mut handled = false;
         for path in &self.paths {
             if path.method == req.method && req.path == path.name {
@@ -595,16 +599,16 @@ impl Server<TcpStream, HTTPRequest> for HTTPServer {
         eprintln!("=== miniserver on http://{}:{}", self.addr, self.port);
 
         for stream in listener.incoming() {
-            let mut max_buffer = MAX_BUFFER;
-            if let Some(mxb) = self.max_buffer {
-                max_buffer = mxb;
-            }
             match stream {
                 Ok(mut stream) => {
-                    let mut data = vec![0; max_buffer];
-                    let _ = stream.read(&mut data);
-                    let request = parse_http_req(data);
-                    self.handle_request(stream, request);
+                    // let mut data = vec![0; max_buffer];
+                    // let _ = stream.read(&mut data);
+                    // let request = parse_http_req(data);
+                    // self.handle_request(&mut stream, request);
+                    let mut self_clone = self.clone(); // Clone the server for each thread
+                    thread::spawn(move || {
+                        self_clone.handle_connection(&mut stream);
+                    });
                 }
                 Err(e) => {
                     eprintln!("..error: {e}")
@@ -637,6 +641,19 @@ impl HTTPServer {
                 path_name
             );
         }
+    }
+
+    fn handle_connection(&mut self, stream: &mut TcpStream) {
+        let mut max_buffer = MAX_BUFFER;
+        if let Some(mxb) = self.max_buffer {
+            max_buffer = mxb;
+        }
+
+        let mut data = vec![0; max_buffer];
+        let _ = stream.read(&mut data);
+
+        let request = parse_http_req(data);
+        self.handle_request(stream, request);
     }
 
     pub fn connect(&mut self, path: &'static str, handler: RequestHandler) {
