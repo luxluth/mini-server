@@ -396,7 +396,6 @@ impl HTTPResponse {
         .to_vec();
 
         bytes.extend(self.body.iter());
-        bytes.extend(CRLF.as_bytes().to_vec().iter());
 
         bytes
     }
