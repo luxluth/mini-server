@@ -1,6 +1,6 @@
 # mini-server
 
-The mini server
+The mini rust server
 
 ```bash
 cargo add mini-server
@@ -16,7 +16,7 @@ fn main() {
     if let MatchingServer::HTTP(mut app) = server {
         app.get("/", |_| {
             let mut response = HTTPResponse::default();
-            response.set_body("Hello World!".into());
+            response.set_body(b"Hello World!".to_vec());
 
             response
         });
