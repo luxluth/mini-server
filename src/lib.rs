@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::{Read, Write};
+use std::io::{BufRead, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::u8;
@@ -116,29 +116,29 @@ pub fn parse_path(data: String) -> (String, URLSearchParams) {
     }
 }
 
-fn split_head_and_body(data: Vec<u8>) -> (Vec<String>, Vec<u8>) {
-    let data_string_form = vec_to_string(data);
-    let split_at = data_string_form.rfind(format!("{c}{c}", c = CRLF).as_str());
-    if let Some(pos) = split_at {
-        let (head, body) = data_string_form.split_at(pos + (CRLF.len() * 2));
-        let head: Vec<String> = head.split(CRLF).map(|s| s.to_string()).collect();
-
-        (head, body.into())
-    } else {
-        (Vec::new(), Vec::new())
-    }
-}
+// fn split_head_and_body(data: Vec<u8>) -> (Vec<String>, Vec<u8>) {
+//     let data_string_form = vec_to_string(data);
+//     let split_at = data_string_form.rfind(format!("{c}{c}", c = CRLF).as_str());
+//     if let Some(pos) = split_at {
+//         let (head, body) = data_string_form.split_at(pos + (CRLF.len() * 2));
+//         let head: Vec<String> = head.split(CRLF).map(|s| s.to_string()).collect();
+//
+//         (head, body.into())
+//     } else {
+//         (Vec::new(), Vec::new())
+//     }
+// }
 
 /// The parse_http_req function takes a string representing an entire HTTP request and parses
 /// it into a `HTTPRequest` struct, extracting information such as the HTTP method, path,
 /// headers, and body.
-pub fn parse_http_req(data: Vec<u8>) -> HTTPRequest {
-    // let mut req_raw_map = HashMap::<String, String>::new();
-    let mut req = HTTPRequest::default();
-    let (head, body) = split_head_and_body(data);
-    req.body = body;
-    for chunck in head {
-        let chunck = chunck.replace(CRLF, "");
+pub fn parse_http_req(body: Vec<u8>, head: String) -> HTTPRequest {
+    let mut req = HTTPRequest {
+        body,
+        ..Default::default()
+    };
+
+    for chunck in head.lines() {
         if chunck.starts_with("GET")
             || chunck.starts_with("HEAD")
             || chunck.starts_with("POST")
@@ -162,10 +162,35 @@ pub fn parse_http_req(data: Vec<u8>) -> HTTPRequest {
 
         if let Some((field, value)) = chunck.split_once(':') {
             let value = value.trim().to_string();
-            req.headers.insert(field.to_string(), value);
+            req.headers.insert(field.to_string().to_lowercase(), value);
         }
     }
     req
+}
+
+fn get_body_len(head: String) -> Option<usize> {
+    for chunck in head.lines() {
+        if chunck.starts_with("GET")
+            || chunck.starts_with("HEAD")
+            || chunck.starts_with("POST")
+            || chunck.starts_with("PUT")
+            || chunck.starts_with("DELETE")
+            || chunck.starts_with("CONNECT")
+            || chunck.starts_with("OPTIONS")
+            || chunck.starts_with("TRACE")
+            || chunck.starts_with("PATCH")
+        {
+            continue;
+        }
+
+        if let Some((field, value)) = chunck.split_once(':') {
+            if field.to_lowercase().trim() == "content-length" {
+                return Some(value.trim().parse().unwrap());
+            }
+        }
+    }
+
+    None
 }
 
 fn get_method(raw: &str) -> HTTPMethod {
@@ -385,7 +410,7 @@ impl HTTPResponse {
     /// ```
     pub fn raw(&mut self) -> Vec<u8> {
         let mut bytes = format!(
-            "HTTP/{version} {status} {status_text}{CRLF}{headers}{CRLF}", // dont forget {body}{CRLF}
+            "HTTP/{version} {status} {status_text}{CRLF}{headers}{CRLF}",
             version = self.http_version,
             status = self.status,
             status_text = self.status_text,
@@ -506,7 +531,6 @@ pub struct MiniServer {}
 
 pub trait Server<U, V> {
     fn handle_request(&mut self, stream: U, req: V);
-    fn set_buffer_to(&mut self, size: usize);
     fn run(&mut self);
     fn on_ready(&mut self, handler: SoftEventHandler);
     fn on_shutdown(&mut self, handler: SoftEventHandler);
@@ -540,14 +564,9 @@ pub struct HTTPServer {
     listeners: Vec<Listener>,
     on_ready: Option<SoftListener>,
     on_shutdown: Option<SoftListener>, // TODO: Implement on_shutdown
-    max_buffer: Option<usize>,
 }
 
 impl Server<&mut TcpStream, HTTPRequest> for HTTPServer {
-    fn set_buffer_to(&mut self, size: usize) {
-        self.max_buffer = Some(size);
-    }
-
     fn on_ready(&mut self, handler: SoftEventHandler) {
         self.on_ready = Some(SoftListener::new(handler));
     }
@@ -626,7 +645,6 @@ impl HTTPServer {
             listeners: Vec::new(),
             on_ready: None,
             on_shutdown: None,
-            max_buffer: None,
         }
     }
 
@@ -643,16 +661,28 @@ impl HTTPServer {
     }
 
     fn handle_connection(&mut self, stream: &mut TcpStream) {
-        let mut max_buffer = MAX_BUFFER;
-        if let Some(mxb) = self.max_buffer {
-            max_buffer = mxb;
+        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+        let mut head = String::new();
+        'read_req_head: loop {
+            let mut temp = String::new();
+            reader.read_line(&mut temp).unwrap();
+
+            if temp.trim().is_empty() {
+                break 'read_req_head;
+            } else {
+                head.push_str(&temp);
+            }
         }
 
-        let mut data = vec![0; max_buffer];
-        let _ = stream.read(&mut data);
-
-        let request = parse_http_req(data);
-        self.handle_request(stream, request);
+        if let Some(body_size) = get_body_len(head.clone()) {
+            let mut body_buf = vec![0; body_size];
+            let _ = reader.read_exact(&mut body_buf);
+            let request = parse_http_req(body_buf, head);
+            self.handle_request(stream, request);
+        } else {
+            let request = parse_http_req(vec![], head);
+            self.handle_request(stream, request);
+        }
     }
 
     pub fn connect(&mut self, path: &'static str, handler: RequestHandler) {
@@ -721,10 +751,6 @@ impl Server<&mut TcpStream, Request> for SimpleServer {
         }
     }
 
-    fn set_buffer_to(&mut self, size: usize) {
-        self.max_buffer = Some(size);
-    }
-
     fn run(&mut self) {
         let listener = TcpListener::bind(format!("{}:{}", self.addr, self.port)).unwrap();
         if let Some(ready_fn) = &self.on_ready {
@@ -774,6 +800,10 @@ impl SimpleServer {
 
     pub fn on_request(&mut self, handler: SimpleEventHandler) {
         self.listeners.push(handler);
+    }
+
+    pub fn set_buffer_to(&mut self, size: usize) {
+        self.max_buffer = Some(size);
     }
 }
 
