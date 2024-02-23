@@ -3,8 +3,8 @@ use mini_server::*;
 fn index(_: HTTPRequest) -> HTTPResponse {
     let mut response = HTTPResponse::default();
     response.set_header("Content-Type", "text/html");
-    let html_content = include_str!("./index.html").to_string();
-    response.set_body(html_content.into_bytes());
+    let html_content = include_bytes!("./index.html");
+    response.set_body(html_content.into());
 
     response
 }
