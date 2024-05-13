@@ -6,23 +6,54 @@ The mini rust server
 cargo add mini-server
 ```
 
-## Basic server
+## HTTP server
 
 ```rust
 use mini_server::*;
 
 fn main() {
-    let server = MiniServer::init("localhost", 4221, ServerKind::HTTP);
-    if let MatchingServer::HTTP(mut app) = server {
-        app.get("/", |_| {
-            let mut response = HTTPResponse::default();
-            response.set_body(b"Hello World!".to_vec());
+    let mut app = http_server!("localhost", 4221);
 
-            response
-        });
+    app.get("/", |_, _| {
+        let mut response = HTTPResponse::default();
+        response.set_body(b"Hello World!".to_vec());
 
-        app.run();
-    }
+        response
+    });
+
+    app.run();
+}
+```
+
+## Dynamic paths
+
+The path is an expression that can contains dynamic variables.
+
+- Basic paths: `/`, `/this/is/a/path`, ...
+- Dynamic path: `/this/is/a/@varibale`, `/this/is/another/#variable`
+
+`#` and `@` are prefixes for dynamic values. `#` for denoting numbers
+and `@` for strings
+
+```rust
+use mini_server::*;
+
+fn main() {
+  let mut app = http_server!("localhost", 4221);
+
+  app.get("/hello/@name/#age", |_, exprs| {
+    let name = expand!(exprs, "name", PathExpr::String);
+    let age = expand!(exprs, "age", PathExpr::Number);
+
+    let mut response = HTTPResponse::default();
+    response.set_body(
+      format!("Hello {name}, you are {age}!")
+        .as_bytes()
+        .to_vec(),
+    );
+
+    response
+  });
 }
 ```
 
@@ -32,4 +63,9 @@ To run an example:
 
 ```bash
 cargo run --example $name
+
+```
+
+```
+
 ```

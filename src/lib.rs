@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
+use std::iter::zip;
 use std::net::{TcpListener, TcpStream};
 use std::thread;
 use std::u8;
@@ -96,7 +97,7 @@ pub type Headers = HashMap<String, String>;
 /// The parse_path function takes a string representing an HTTP request path and extracts the path and URL
 /// parameters (if any) from it. It returns a tuple containing the path and a URLSearchParams
 /// `(HashMap<String, String>)` representing the parsed URL parameters.
-pub fn parse_path(data: String) -> (String, URLSearchParams) {
+fn parse_path(data: String) -> (String, URLSearchParams) {
     let split_data = data.split_once('?');
     if split_data.is_none() {
         (data, HashMap::new())
@@ -116,23 +117,10 @@ pub fn parse_path(data: String) -> (String, URLSearchParams) {
     }
 }
 
-// fn split_head_and_body(data: Vec<u8>) -> (Vec<String>, Vec<u8>) {
-//     let data_string_form = vec_to_string(data);
-//     let split_at = data_string_form.rfind(format!("{c}{c}", c = CRLF).as_str());
-//     if let Some(pos) = split_at {
-//         let (head, body) = data_string_form.split_at(pos + (CRLF.len() * 2));
-//         let head: Vec<String> = head.split(CRLF).map(|s| s.to_string()).collect();
-//
-//         (head, body.into())
-//     } else {
-//         (Vec::new(), Vec::new())
-//     }
-// }
-
 /// The parse_http_req function takes a string representing an entire HTTP request and parses
 /// it into a `HTTPRequest` struct, extracting information such as the HTTP method, path,
 /// headers, and body.
-pub fn parse_http_req(body: Vec<u8>, head: String) -> HTTPRequest {
+fn parse_http_req(body: Vec<u8>, head: String) -> HTTPRequest {
     let mut req = HTTPRequest {
         body,
         ..Default::default()
@@ -206,18 +194,6 @@ fn get_method(raw: &str) -> HTTPMethod {
         "PATCH" => HTTPMethod::PATCH,
         _ => HTTPMethod::GET,
     }
-}
-
-/// The vec_to_string function converts a vector of bytes (**`Vec<u8>`**) into a UTF-8 encoded string.
-pub fn vec_to_string(bytes: Vec<u8>) -> String {
-    String::from_utf8_lossy(&bytes).into_owned()
-
-    // if let Ok(utf8_string) = String::from_utf8(bytes) {
-    //     utf8_string
-    // } else {
-    //     eprintln!("..error: Unable to convert to utf8");
-    //     String::new()
-    // }
 }
 
 /// The `HTTPResponse` struct represents an HTTP response that the web server can send to clients.
@@ -426,9 +402,41 @@ impl HTTPResponse {
     }
 }
 
+/// Get the value of a path dynamic variable
+/// ```rust
+/// use mini_server::*;
+/// let mut app = http_server!("localhost", 4221);
+///
+/// app.get("/hello/@name/#age", |_, exprs| {
+///     let name = expand!(exprs, "name", PathExpr::String);
+///     let age = expand!(exprs, "age", PathExpr::Number);
+///
+///     let mut response = HTTPResponse::default();
+///     response.set_body(
+///         format!("Hello {name}, you are {age}!")
+///             .as_bytes()
+///             .to_vec(),
+///     );
+///
+///     response
+/// });
+/// ```
+#[macro_export]
+macro_rules! expand {
+    ($exprs: expr, $name: expr, $against: path) => {
+        match $exprs.get(&String::from($name)).unwrap() {
+            $against(value) => value,
+            _ => unreachable!(),
+        }
+    };
+}
+
+/// An hash map of `PathExpr`
+pub type PathMap = HashMap<String, PathExpr>;
+
 /// RequestHandler type is a function type that defines the signature for handling HTTP requests.
-/// It takes an `HTTPRequest` as a parameter and returns an `HTTPResponse`
-pub type RequestHandler = fn(HTTPRequest) -> HTTPResponse;
+/// It takes `HTTPRequest` and `HashMap<String, PathExpr>` as a parameter and returns an `HTTPResponse`
+pub type RequestHandler = fn(HTTPRequest, PathMap) -> HTTPResponse;
 
 /// EventHandler type is a function type that defines the signature for handling events triggered
 /// by HTTP requests. It takes references to an `HTTPRequest` and a mutable `HTTPResponse` as parameters.
@@ -463,40 +471,102 @@ pub enum HTTPMethod {
     /// Performs a message loop-back test along the path to the target resource.
     TRACE,
 }
+
+/// A path expression represent a dynamic variable of a path
+#[derive(Debug, Clone)]
+pub enum PathExpr {
+    String(String),
+    Number(i32),
+}
+
 #[derive(Clone)]
-pub struct Path {
-    pub name: &'static str,
+struct Path {
+    pub expr: String,
     pub handler: RequestHandler,
     pub method: HTTPMethod,
 }
 
 impl PartialEq for Path {
     fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.method == other.method
+        self.r#match(other.expr.clone()) && self.method == other.method
     }
 }
 
 #[derive(Clone)]
-pub struct Listener {
+struct Listener {
     handler: EventHandler,
 }
 
 #[derive(Clone)]
-pub struct SoftListener {
+struct SoftListener {
     handler: SoftEventHandler,
 }
 
 impl Path {
-    pub fn new(name: &'static str, handler: RequestHandler, method: HTTPMethod) -> Self {
+    pub fn new(expr: &str, handler: RequestHandler, method: HTTPMethod) -> Self {
         Path {
-            name,
+            expr: expr.to_string(),
             handler,
             method,
         }
     }
 
-    pub fn handle_request(&self, request: HTTPRequest) -> HTTPResponse {
-        (self.handler)(request)
+    fn parse(&self, expr: String) -> PathMap {
+        let mut exprs = PathMap::new();
+        if self.r#match(expr.clone()) {
+            let other_part: Vec<_> = expr.split('/').filter(|x| !x.is_empty()).collect();
+            let self_part: Vec<_> = self.expr.split('/').filter(|x| !x.is_empty()).collect();
+
+            for (o_chunck, s_chunck) in zip(other_part, self_part) {
+                if s_chunck.starts_with('#') {
+                    let name = s_chunck.strip_prefix('#').unwrap().to_string();
+                    let value = o_chunck.parse::<i32>().unwrap();
+                    exprs.insert(name, PathExpr::Number(value));
+                } else if s_chunck.starts_with('@') {
+                    let name = s_chunck.strip_prefix('@').unwrap().to_string();
+                    let value = o_chunck.to_string();
+                    exprs.insert(name, PathExpr::String(value));
+                } else {
+                    continue;
+                }
+            }
+        }
+
+        exprs
+    }
+
+    fn r#match(&self, expr: String) -> bool {
+        if expr == self.expr {
+            true
+        } else {
+            let other_part: Vec<_> = expr.split('/').filter(|x| !x.is_empty()).collect();
+            let self_part: Vec<_> = self.expr.split('/').filter(|x| !x.is_empty()).collect();
+
+            if other_part.len() != self_part.len() {
+                false
+            } else {
+                for (o_chunck, s_chunck) in zip(other_part, self_part) {
+                    if s_chunck.starts_with('#') {
+                        if o_chunck.parse::<i32>().is_ok() {
+                            continue;
+                        } else {
+                            return false;
+                        }
+                    } else if s_chunck.starts_with('@') {
+                        continue;
+                    } else if o_chunck != s_chunck {
+                        return false;
+                    }
+                }
+
+                true
+            }
+        }
+    }
+
+    fn handle_request(&self, request: HTTPRequest) -> HTTPResponse {
+        let exprs = self.parse(request.path.clone());
+        (self.handler)(request, exprs)
     }
 }
 
@@ -521,7 +591,7 @@ impl SoftListener {
 }
 
 pub enum ServerKind {
-    SIMPLE,
+    TCP,
     HTTP,
     // TODO: UDP,
     // TODO: WEBSOCKET,
@@ -536,31 +606,43 @@ pub trait Server<U, V> {
     fn on_shutdown(&mut self, handler: SoftEventHandler);
 }
 
+/// `Vec<u8>`
 pub type Request = Vec<u8>;
+/// `Vec<u8>`
 pub type Response = Vec<u8>;
 
-/// `HTTPServer`
+/// This struct provide a simple http server
+/// that handle many of the use cases
 ///
 /// ## Example
 ///
 /// ```rust
 /// use mini_server::*;
-/// let server = MiniServer::init("localhost", 4221, ServerKind::HTTP);
-/// if let MatchingServer::HTTP(mut app) = server {
-///     app.get("/", |_| {
-///         let mut response = HTTPResponse::default();
-///         response.set_body("Hello World!".into());
-///         response
-///     });
-///     
-///     // app.run();
-/// }
+///
+/// let mut app = http_server!("localhost", 4221);
+///
+/// app.get("/", |_, _| {
+///     let mut response = HTTPResponse::default();
+///     response.set_body(b"Hello World!".to_vec());
+///
+///     response
+/// });
+///
 /// ```
+///
+/// ## Path
+///
+/// The path is an expression that can contains dynamic variables.
+/// - Basic paths: `/`, `/this/is/a/path`, ...
+/// - Dynamic path: `/this/is/a/@varibale`, `/this/is/another/#variable`
+///
+/// `#` and `@` are prefixes for dynamic values. `#` for denoting numbers
+/// and `@` for strings
 #[derive(Clone)]
 pub struct HTTPServer {
     pub addr: &'static str,
     pub port: u32,
-    pub paths: Vec<Path>,
+    paths: Vec<Path>,
     listeners: Vec<Listener>,
     on_ready: Option<SoftListener>,
     on_shutdown: Option<SoftListener>, // TODO: Implement on_shutdown
@@ -578,7 +660,7 @@ impl Server<&mut TcpStream, HTTPRequest> for HTTPServer {
     fn handle_request(&mut self, stream: &mut TcpStream, req: HTTPRequest) {
         let mut handled = false;
         for path in &self.paths {
-            if path.method == req.method && req.path == path.name {
+            if path.method == req.method && path.r#match(req.path.clone()) {
                 let mut response = path.handle_request(req.clone());
                 for listener in &self.listeners {
                     listener.notify(&req, &mut response);
@@ -649,7 +731,7 @@ impl HTTPServer {
     }
 
     fn add_path(&mut self, path: Path) {
-        let path_name = path.name;
+        let path_name = path.expr.clone();
         if !self.paths.contains(&path) {
             self.paths.push(path);
         } else {
@@ -733,7 +815,7 @@ impl HTTPServer {
     }
 }
 
-pub struct SimpleServer {
+pub struct TcpServer {
     pub addr: &'static str,
     pub port: u32,
     listeners: Vec<SimpleEventHandler>,
@@ -742,7 +824,7 @@ pub struct SimpleServer {
     max_buffer: Option<usize>,
 }
 
-impl Server<&mut TcpStream, Request> for SimpleServer {
+impl Server<&mut TcpStream, Request> for TcpServer {
     fn handle_request(&mut self, stream: &mut TcpStream, req: Request) {
         for listener in &self.listeners {
             if let Some(response) = listener(stream, req.clone()) {
@@ -786,7 +868,7 @@ impl Server<&mut TcpStream, Request> for SimpleServer {
     }
 }
 
-impl SimpleServer {
+impl TcpServer {
     pub fn new(addr: &'static str, port: u32) -> Self {
         Self {
             addr,
@@ -809,13 +891,45 @@ impl SimpleServer {
 
 pub enum MatchingServer {
     HTTP(HTTPServer),
-    SIMPLE(SimpleServer),
+    TCP(TcpServer),
+}
+
+/// Iniitialize a new http server
+/// ```rust
+/// use mini_server::*;
+///
+/// let mut app = http_server!("localhost", 4221);
+/// ```
+#[macro_export]
+macro_rules! http_server {
+    ($domain: expr, $port: expr) => {
+        match mini_server::MiniServer::init($domain, $port, mini_server::ServerKind::HTTP) {
+            mini_server::MatchingServer::HTTP(v) => v,
+            _ => unreachable!(),
+        }
+    };
+}
+
+/// Iniitialize a new tcp server
+/// ```rust
+/// use mini_server::*;
+///
+/// let mut app = http_server!("localhost", 4221);
+/// ```
+#[macro_export]
+macro_rules! tcp_server {
+    ($domain: expr, $port: expr) => {
+        match mini_server::MiniServer::init($domain, $port, mini_server::ServerKind::TCP) {
+            mini_server::MatchingServer::TCP(v) => v,
+            _ => unreachable!(),
+        }
+    };
 }
 
 impl MiniServer {
     pub fn init(addr: &'static str, port: u32, kind: ServerKind) -> MatchingServer {
         match kind {
-            ServerKind::SIMPLE => MatchingServer::SIMPLE(SimpleServer::new(addr, port)),
+            ServerKind::TCP => MatchingServer::TCP(TcpServer::new(addr, port)),
             ServerKind::HTTP => MatchingServer::HTTP(HTTPServer::new(addr, port)),
         }
     }
