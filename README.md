@@ -65,7 +65,3 @@ To run an example:
 cargo run --example $name
 
 ```
-
-```
-
-```
