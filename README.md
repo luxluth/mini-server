@@ -12,7 +12,7 @@ cargo add mini-server
 use mini_server::*;
 
 fn main() {
-    let mut app = http_server!("localhost", 4221);
+    let mut app = HTTPServer::default();
 
     app.get("/", |_, _| {
         let mut response = HTTPResponse::default();
@@ -39,7 +39,7 @@ and `@` for strings
 use mini_server::*;
 
 fn main() {
-  let mut app = http_server!("localhost", 4221);
+  let mut app = HTTPServer::default();
 
   app.get("/hello/@name/#age", |_, exprs| {
     let name = expand!(exprs, "name", PathExpr::String);
@@ -63,5 +63,4 @@ To run an example:
 
 ```bash
 cargo run --example $name
-
 ```
