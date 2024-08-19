@@ -1,6 +1,6 @@
 [package]
 name = "mini-server"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2021"
 description = "The mini web server"
 license = "MIT"
@@ -14,3 +14,6 @@ authors = ["luxluth <delphin.blehoussi93@gmail.com>"]
 keywords = ["web-server", "server", "http", "library", "web"]
 repository = "https://github.com/luxluth/mini-server"
 homepage = "https://github.com/luxluth/mini-server#readme"
+
+[dependencies]
+httparse = "1.9.4"
