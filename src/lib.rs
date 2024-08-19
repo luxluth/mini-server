@@ -1,8 +1,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 use std::iter::zip;
-use std::net::{TcpListener, TcpStream};
-use std::u8;
+use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 
 /// `CRLF` represents the Carriage Return (CR) and Line Feed (LF)
 /// characters combined ("\r\n"). It is commonly used as the
@@ -404,7 +403,7 @@ impl HTTPResponse {
 /// Get the value of a path dynamic variable
 /// ```rust
 /// use mini_server::*;
-/// let mut app = http_server!("localhost", 4221);
+/// let mut app = HTTPServer::new("localhost", 4221);
 ///
 /// app.get("/hello/@name/#age", |_, exprs| {
 ///     let name = expand!(exprs, "name", PathExpr::String);
@@ -435,7 +434,7 @@ pub type PathMap = HashMap<String, PathExpr>;
 
 /// RequestHandler type is a function type that defines the signature for handling HTTP requests.
 /// It takes `HTTPRequest` and `HashMap<String, PathExpr>` as a parameter and returns an `HTTPResponse`
-pub struct RequestHandler<'a>(Box<dyn Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a>);
+pub struct RequestHandler<'a>(Box<dyn Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a>);
 
 /// EventHandler type is a function type that defines the signature for handling events triggered
 /// by HTTP requests. It takes references to an `HTTPRequest` and a mutable `HTTPResponse` as parameters.
@@ -446,6 +445,8 @@ pub struct SimpleEventHandler<'a>(Box<dyn Fn(&mut TcpStream, Request) -> Option<
 /// The SoftEventHandler type is a function type that defines the signature for handling soft events,
 /// typically without specific request or response parameters.
 pub struct SoftEventHandler<'a>(Box<dyn Fn() + 'a>);
+
+pub struct ErrorEventHandler<'a>(Box<dyn Fn(RunError) + 'a>);
 
 /// The HTTPMethod enum represents the HTTP methods that can be used in HTTP requests.
 /// Each variant corresponds to a standard HTTP method.
@@ -498,10 +499,14 @@ struct SoftListener<'a> {
     handler: SoftEventHandler<'a>,
 }
 
+struct ErrorListener<'a> {
+    handler: ErrorEventHandler<'a>,
+}
+
 impl<'a> Path<'a> {
     pub fn new<T>(expr: &str, handler: T, method: HTTPMethod) -> Self
     where
-        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
     {
         Path {
             expr: expr.to_string(),
@@ -565,7 +570,7 @@ impl<'a> Path<'a> {
 
     fn handle_request(&self, request: HTTPRequest) -> HTTPResponse {
         let exprs = self.parse(request.path.clone());
-        (self.handler.0)(request, &exprs)
+        (self.handler.0)(request, exprs)
     }
 }
 
@@ -599,6 +604,21 @@ impl<'a> SoftListener<'a> {
     }
 }
 
+impl<'a> ErrorListener<'a> {
+    pub fn new<T>(handler: T) -> Self
+    where
+        T: Fn(RunError) + 'a,
+    {
+        Self {
+            handler: ErrorEventHandler(Box::new(handler)),
+        }
+    }
+
+    pub fn notify(&self, error: RunError) {
+        (self.handler.0)(error)
+    }
+}
+
 pub enum ServerKind {
     TCP,
     HTTP,
@@ -606,7 +626,7 @@ pub enum ServerKind {
     // TODO: WEBSOCKET,
 }
 
-pub struct MiniServer {}
+pub struct MiniServer;
 
 pub trait Server<U, V> {
     fn handle_request(&self, stream: U, req: V);
@@ -626,7 +646,7 @@ pub type Response = Vec<u8>;
 /// ```rust
 /// use mini_server::*;
 ///
-/// let mut app = http_server!("localhost", 4221);
+/// let mut app = HTTPServer::new();
 ///
 /// app.get("/", |_, _| {
 ///     let mut response = HTTPResponse::default();
@@ -646,12 +666,42 @@ pub type Response = Vec<u8>;
 /// `#` and `@` are prefixes for dynamic values. `#` for denoting numbers
 /// and `@` for strings
 pub struct HTTPServer<'a> {
-    pub addr: &'static str,
-    pub port: u32,
+    pub addr: Vec<SocketAddr>,
     paths: Vec<Path<'a>>,
     listeners: Vec<Listener<'a>>,
     on_ready: Option<SoftListener<'a>>,
     on_shutdown: Option<SoftListener<'a>>, // TODO: Implement on_shutdown
+    on_error: Option<ErrorListener<'a>>,
+}
+
+impl Default for HTTPServer<'_> {
+    fn default() -> Self {
+        Self {
+            addr: vec![SocketAddr::new(
+                std::net::IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                4221,
+            )],
+            paths: vec![],
+            listeners: vec![],
+            on_ready: None,
+            on_shutdown: None,
+            on_error: None,
+        }
+    }
+}
+
+pub enum RunError {
+    CannotBindToAddr(Vec<SocketAddr>),
+}
+
+impl std::fmt::Display for RunError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RunError::CannotBindToAddr(addr) => {
+                write!(f, "Unable to bind to those addresses: {addr:?}")
+            }
+        }
+    }
 }
 
 impl Server<&mut TcpStream, HTTPRequest> for HTTPServer<'_> {
@@ -689,39 +739,46 @@ impl Server<&mut TcpStream, HTTPRequest> for HTTPServer<'_> {
     }
 
     fn run(&self) {
-        let listener = TcpListener::bind(format!("{}:{}", self.addr, self.port)).unwrap();
-        if let Some(ready_fn) = &self.on_ready {
-            ready_fn.notify();
-        }
+        if let Ok(listener) = TcpListener::bind(self.addr.as_slice()) {
+            if let Some(ready_fn) = &self.on_ready {
+                ready_fn.notify();
+            }
 
-        eprintln!("=== miniserver on http://{}:{}", self.addr, self.port);
-
-        for stream in listener.incoming() {
-            match stream {
-                Ok(mut stream) => {
-                    // let mut data = vec![0; max_buffer];
-                    // let _ = stream.read(&mut data);
-                    // let request = parse_http_req(data);
-                    // self.handle_request(&mut stream, request);
-                    self.handle_connection(&mut stream);
+            eprintln!("=== miniserver on {:?}", self.addr);
+            for stream in listener.incoming() {
+                match stream {
+                    Ok(mut stream) => {
+                        // let mut data = vec![0; max_buffer];
+                        // let _ = stream.read(&mut data);
+                        // let request = parse_http_req(data);
+                        // self.handle_request(&mut stream, request);
+                        self.handle_connection(&mut stream);
+                    }
+                    Err(e) => {
+                        eprintln!("..error: {e}")
+                    }
                 }
-                Err(e) => {
-                    eprintln!("..error: {e}")
-                }
+            }
+        } else {
+            if let Some(onerror) = &self.on_error {
+                onerror.notify(RunError::CannotBindToAddr(self.addr.clone()));
             }
         }
     }
 }
 
 impl<'a> HTTPServer<'a> {
-    pub fn new(addr: &'static str, port: u32) -> Self {
+    pub fn new<A>(addr: A) -> Self
+    where
+        A: std::net::ToSocketAddrs,
+    {
         Self {
-            addr,
-            port,
+            addr: addr.to_socket_addrs().unwrap().collect(),
             paths: Vec::new(),
             listeners: Vec::new(),
             on_ready: None,
             on_shutdown: None,
+            on_error: None,
         }
     }
 
@@ -737,6 +794,13 @@ impl<'a> HTTPServer<'a> {
         T: Fn() + 'a,
     {
         self.on_shutdown = Some(SoftListener::new(handler));
+    }
+
+    pub fn on_error<T>(&mut self, handler: T)
+    where
+        T: Fn(RunError) + 'a,
+    {
+        self.on_error = Some(ErrorListener::new(handler));
     }
 
     fn add_path(&mut self, path: Path<'a>) {
@@ -778,63 +842,63 @@ impl<'a> HTTPServer<'a> {
 
     pub fn connect<T>(&mut self, path: &'static str, handler: T)
     where
-        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
     {
         self.add_path(Path::new(path, handler, HTTPMethod::CONNECT));
     }
 
     pub fn delete<T>(&mut self, path: &'static str, handler: T)
     where
-        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
     {
         self.add_path(Path::new(path, handler, HTTPMethod::DELETE));
     }
 
     pub fn get<T>(&mut self, path: &'static str, handler: T)
     where
-        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
     {
         self.add_path(Path::new(path, handler, HTTPMethod::GET));
     }
 
     pub fn head<T>(&mut self, path: &'static str, handler: T)
     where
-        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
     {
         self.add_path(Path::new(path, handler, HTTPMethod::HEAD));
     }
 
     pub fn options<T>(&mut self, path: &'static str, handler: T)
     where
-        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
     {
         self.add_path(Path::new(path, handler, HTTPMethod::OPTIONS));
     }
 
     pub fn patch<T>(&mut self, path: &'static str, handler: T)
     where
-        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
     {
         self.add_path(Path::new(path, handler, HTTPMethod::PATCH));
     }
 
     pub fn post<T>(&mut self, path: &'static str, handler: T)
     where
-        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
     {
         self.add_path(Path::new(path, handler, HTTPMethod::POST));
     }
 
     pub fn put<T>(&mut self, path: &'static str, handler: T)
     where
-        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
     {
         self.add_path(Path::new(path, handler, HTTPMethod::PUT));
     }
 
     pub fn trace<T>(&mut self, path: &'static str, handler: T)
     where
-        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
     {
         self.add_path(Path::new(path, handler, HTTPMethod::TRACE));
     }
@@ -855,12 +919,26 @@ impl<'a> HTTPServer<'a> {
 }
 
 pub struct TcpServer<'a> {
-    pub addr: &'static str,
-    pub port: u32,
+    pub addr: Vec<SocketAddr>,
     listeners: Vec<SimpleEventHandler<'a>>,
     on_ready: Option<SoftListener<'a>>,
     on_shutdown: Option<SoftListener<'a>>, // TODO: Implement on_shutdown
     max_buffer: Option<usize>,
+}
+
+impl Default for TcpServer<'_> {
+    fn default() -> Self {
+        Self {
+            addr: vec![SocketAddr::new(
+                std::net::IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)),
+                4221,
+            )],
+            listeners: vec![],
+            on_ready: None,
+            on_shutdown: None,
+            max_buffer: None,
+        }
+    }
 }
 
 impl Server<&mut TcpStream, Request> for TcpServer<'_> {
@@ -873,12 +951,12 @@ impl Server<&mut TcpStream, Request> for TcpServer<'_> {
     }
 
     fn run(&self) {
-        let listener = TcpListener::bind(format!("{}:{}", self.addr, self.port)).unwrap();
+        let listener = TcpListener::bind(self.addr.as_slice()).unwrap();
         if let Some(ready_fn) = &self.on_ready {
             ready_fn.notify();
         }
 
-        eprintln!("=== miniserver on tcp://{}:{}", self.addr, self.port);
+        eprintln!("=== tcp miniserver on: {:?}", self.addr);
 
         for stream in listener.incoming() {
             let mut max_buffer = MAX_BUFFER;
@@ -900,10 +978,12 @@ impl Server<&mut TcpStream, Request> for TcpServer<'_> {
 }
 
 impl<'a> TcpServer<'a> {
-    pub fn new(addr: &'static str, port: u32) -> Self {
+    pub fn new<A>(addr: A) -> Self
+    where
+        A: std::net::ToSocketAddrs,
+    {
         Self {
-            addr,
-            port,
+            addr: addr.to_socket_addrs().unwrap().collect(),
             on_ready: None,
             listeners: Vec::new(),
             on_shutdown: None,
@@ -941,13 +1021,14 @@ pub enum MatchingServer<'a> {
 ///
 /// let mut app = http_server!("localhost", 4221);
 /// ```
+#[deprecated(
+    since = "0.1.2",
+    note = "Please use `mini_server::TcpServer::default()` or `mini_server::HTTPServer::default()`"
+)]
 #[macro_export]
 macro_rules! http_server {
     ($domain: expr, $port: expr) => {
-        match mini_server::MiniServer::init($domain, $port, mini_server::ServerKind::HTTP) {
-            mini_server::MatchingServer::HTTP(v) => v,
-            _ => unreachable!(),
-        }
+        mini_server::HTTPServer::new(format!("{}:{}", $domain, $port))
     };
 }
 
@@ -955,23 +1036,28 @@ macro_rules! http_server {
 /// ```rust
 /// use mini_server::*;
 ///
-/// let mut app = http_server!("localhost", 4221);
+/// let mut app = tcp_server!("localhost", 4221);
 /// ```
+#[deprecated(
+    since = "0.1.2",
+    note = "Please use `mini_server::TcpServer::default()` or `mini_server::HTTPServer::default()`"
+)]
 #[macro_export]
 macro_rules! tcp_server {
     ($domain: expr, $port: expr) => {
-        match mini_server::MiniServer::init($domain, $port, mini_server::ServerKind::TCP) {
-            mini_server::MatchingServer::TCP(v) => v,
-            _ => unreachable!(),
-        }
+        mini_server::TcpServer::new(format!("{}:{}", $domain, $port))
     };
 }
 
 impl MiniServer {
+    #[deprecated(
+        since = "0.1.2",
+        note = "Please use `mini_server::TcpServer::default()` or `mini_server::HTTPServer::default()`"
+    )]
     pub fn init(addr: &'static str, port: u32, kind: ServerKind) -> MatchingServer {
         match kind {
-            ServerKind::TCP => MatchingServer::TCP(TcpServer::new(addr, port)),
-            ServerKind::HTTP => MatchingServer::HTTP(HTTPServer::new(addr, port)),
+            ServerKind::TCP => MatchingServer::TCP(TcpServer::new(format!("{addr}:{port}"))),
+            ServerKind::HTTP => MatchingServer::HTTP(HTTPServer::new(format!("{addr}:{port}"))),
         }
     }
 }
