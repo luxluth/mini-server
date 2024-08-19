@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 use std::iter::zip;
 use std::net::{TcpListener, TcpStream};
-use std::thread;
 use std::u8;
 
 /// `CRLF` represents the Carriage Return (CR) and Line Feed (LF)
@@ -436,17 +435,17 @@ pub type PathMap = HashMap<String, PathExpr>;
 
 /// RequestHandler type is a function type that defines the signature for handling HTTP requests.
 /// It takes `HTTPRequest` and `HashMap<String, PathExpr>` as a parameter and returns an `HTTPResponse`
-pub type RequestHandler = fn(HTTPRequest, PathMap) -> HTTPResponse;
+pub struct RequestHandler<'a>(Box<dyn Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a>);
 
 /// EventHandler type is a function type that defines the signature for handling events triggered
 /// by HTTP requests. It takes references to an `HTTPRequest` and a mutable `HTTPResponse` as parameters.
-pub type EventHandler = fn(&HTTPRequest, &mut HTTPResponse);
+pub struct EventHandler<'a>(Box<dyn Fn(&HTTPRequest, &mut HTTPResponse) + 'a>);
 
-pub type SimpleEventHandler = fn(&mut TcpStream, Request) -> Option<Response>;
+pub struct SimpleEventHandler<'a>(Box<dyn Fn(&mut TcpStream, Request) -> Option<Response> + 'a>);
 
 /// The SoftEventHandler type is a function type that defines the signature for handling soft events,
 /// typically without specific request or response parameters.
-pub type SoftEventHandler = fn();
+pub struct SoftEventHandler<'a>(Box<dyn Fn() + 'a>);
 
 /// The HTTPMethod enum represents the HTTP methods that can be used in HTTP requests.
 /// Each variant corresponds to a standard HTTP method.
@@ -479,34 +478,34 @@ pub enum PathExpr {
     Number(i32),
 }
 
-#[derive(Clone)]
-struct Path {
+struct Path<'a> {
     pub expr: String,
-    pub handler: RequestHandler,
+    pub handler: RequestHandler<'a>,
     pub method: HTTPMethod,
 }
 
-impl PartialEq for Path {
+impl PartialEq for Path<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.r#match(other.expr.clone()) && self.method == other.method
     }
 }
 
-#[derive(Clone)]
-struct Listener {
-    handler: EventHandler,
+struct Listener<'a> {
+    handler: EventHandler<'a>,
 }
 
-#[derive(Clone)]
-struct SoftListener {
-    handler: SoftEventHandler,
+struct SoftListener<'a> {
+    handler: SoftEventHandler<'a>,
 }
 
-impl Path {
-    pub fn new(expr: &str, handler: RequestHandler, method: HTTPMethod) -> Self {
+impl<'a> Path<'a> {
+    pub fn new<T>(expr: &str, handler: T, method: HTTPMethod) -> Self
+    where
+        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+    {
         Path {
             expr: expr.to_string(),
-            handler,
+            handler: RequestHandler(Box::new(handler)),
             method,
         }
     }
@@ -566,27 +565,37 @@ impl Path {
 
     fn handle_request(&self, request: HTTPRequest) -> HTTPResponse {
         let exprs = self.parse(request.path.clone());
-        (self.handler)(request, exprs)
+        (self.handler.0)(request, &exprs)
     }
 }
 
-impl Listener {
-    pub fn new(handler: EventHandler) -> Self {
-        Listener { handler }
+impl<'a> Listener<'a> {
+    pub fn new<T>(handler: T) -> Self
+    where
+        T: Fn(&HTTPRequest, &mut HTTPResponse) + 'a,
+    {
+        Listener {
+            handler: EventHandler(Box::new(handler)),
+        }
     }
 
     pub fn notify(&self, req: &HTTPRequest, res: &mut HTTPResponse) {
-        (self.handler)(req, res)
+        (self.handler.0)(req, res)
     }
 }
 
-impl SoftListener {
-    pub fn new(handler: SoftEventHandler) -> Self {
-        SoftListener { handler }
+impl<'a> SoftListener<'a> {
+    pub fn new<T>(handler: T) -> Self
+    where
+        T: Fn() + 'a,
+    {
+        SoftListener {
+            handler: SoftEventHandler(Box::new(handler)),
+        }
     }
 
     pub fn notify(&self) {
-        (self.handler)()
+        (self.handler.0)()
     }
 }
 
@@ -600,10 +609,8 @@ pub enum ServerKind {
 pub struct MiniServer {}
 
 pub trait Server<U, V> {
-    fn handle_request(&mut self, stream: U, req: V);
-    fn run(&mut self);
-    fn on_ready(&mut self, handler: SoftEventHandler);
-    fn on_shutdown(&mut self, handler: SoftEventHandler);
+    fn handle_request(&self, stream: U, req: V);
+    fn run(&self);
 }
 
 /// `Vec<u8>`
@@ -638,26 +645,17 @@ pub type Response = Vec<u8>;
 ///
 /// `#` and `@` are prefixes for dynamic values. `#` for denoting numbers
 /// and `@` for strings
-#[derive(Clone)]
-pub struct HTTPServer {
+pub struct HTTPServer<'a> {
     pub addr: &'static str,
     pub port: u32,
-    paths: Vec<Path>,
-    listeners: Vec<Listener>,
-    on_ready: Option<SoftListener>,
-    on_shutdown: Option<SoftListener>, // TODO: Implement on_shutdown
+    paths: Vec<Path<'a>>,
+    listeners: Vec<Listener<'a>>,
+    on_ready: Option<SoftListener<'a>>,
+    on_shutdown: Option<SoftListener<'a>>, // TODO: Implement on_shutdown
 }
 
-impl Server<&mut TcpStream, HTTPRequest> for HTTPServer {
-    fn on_ready(&mut self, handler: SoftEventHandler) {
-        self.on_ready = Some(SoftListener::new(handler));
-    }
-
-    fn on_shutdown(&mut self, handler: SoftEventHandler) {
-        self.on_shutdown = Some(SoftListener::new(handler));
-    }
-
-    fn handle_request(&mut self, stream: &mut TcpStream, req: HTTPRequest) {
+impl Server<&mut TcpStream, HTTPRequest> for HTTPServer<'_> {
+    fn handle_request(&self, stream: &mut TcpStream, req: HTTPRequest) {
         let mut handled = false;
         for path in &self.paths {
             if path.method == req.method && path.r#match(req.path.clone()) {
@@ -690,7 +688,7 @@ impl Server<&mut TcpStream, HTTPRequest> for HTTPServer {
         }
     }
 
-    fn run(&mut self) {
+    fn run(&self) {
         let listener = TcpListener::bind(format!("{}:{}", self.addr, self.port)).unwrap();
         if let Some(ready_fn) = &self.on_ready {
             ready_fn.notify();
@@ -705,10 +703,7 @@ impl Server<&mut TcpStream, HTTPRequest> for HTTPServer {
                     // let _ = stream.read(&mut data);
                     // let request = parse_http_req(data);
                     // self.handle_request(&mut stream, request);
-                    let mut self_clone = self.clone();
-                    thread::spawn(move || {
-                        self_clone.handle_connection(&mut stream);
-                    });
+                    self.handle_connection(&mut stream);
                 }
                 Err(e) => {
                     eprintln!("..error: {e}")
@@ -718,7 +713,7 @@ impl Server<&mut TcpStream, HTTPRequest> for HTTPServer {
     }
 }
 
-impl HTTPServer {
+impl<'a> HTTPServer<'a> {
     pub fn new(addr: &'static str, port: u32) -> Self {
         Self {
             addr,
@@ -730,7 +725,21 @@ impl HTTPServer {
         }
     }
 
-    fn add_path(&mut self, path: Path) {
+    pub fn on_ready<T>(&mut self, handler: T)
+    where
+        T: Fn() + 'a,
+    {
+        self.on_ready = Some(SoftListener::new(handler));
+    }
+
+    pub fn on_shutdown<T>(&mut self, handler: T)
+    where
+        T: Fn() + 'a,
+    {
+        self.on_shutdown = Some(SoftListener::new(handler));
+    }
+
+    fn add_path(&mut self, path: Path<'a>) {
         let path_name = path.expr.clone();
         if !self.paths.contains(&path) {
             self.paths.push(path);
@@ -742,7 +751,7 @@ impl HTTPServer {
         }
     }
 
-    fn handle_connection(&mut self, stream: &mut TcpStream) {
+    fn handle_connection(&self, stream: &mut TcpStream) {
         let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
         let mut head = String::new();
         'read_req_head: loop {
@@ -767,73 +776,103 @@ impl HTTPServer {
         }
     }
 
-    pub fn connect(&mut self, path: &'static str, handler: RequestHandler) {
+    pub fn connect<T>(&mut self, path: &'static str, handler: T)
+    where
+        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+    {
         self.add_path(Path::new(path, handler, HTTPMethod::CONNECT));
     }
 
-    pub fn delete(&mut self, path: &'static str, handler: RequestHandler) {
+    pub fn delete<T>(&mut self, path: &'static str, handler: T)
+    where
+        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+    {
         self.add_path(Path::new(path, handler, HTTPMethod::DELETE));
     }
 
-    pub fn get(&mut self, path: &'static str, handler: RequestHandler) {
+    pub fn get<T>(&mut self, path: &'static str, handler: T)
+    where
+        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+    {
         self.add_path(Path::new(path, handler, HTTPMethod::GET));
     }
 
-    pub fn head(&mut self, path: &'static str, handler: RequestHandler) {
+    pub fn head<T>(&mut self, path: &'static str, handler: T)
+    where
+        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+    {
         self.add_path(Path::new(path, handler, HTTPMethod::HEAD));
     }
 
-    pub fn options(&mut self, path: &'static str, handler: RequestHandler) {
+    pub fn options<T>(&mut self, path: &'static str, handler: T)
+    where
+        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+    {
         self.add_path(Path::new(path, handler, HTTPMethod::OPTIONS));
     }
 
-    pub fn patch(&mut self, path: &'static str, handler: RequestHandler) {
+    pub fn patch<T>(&mut self, path: &'static str, handler: T)
+    where
+        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+    {
         self.add_path(Path::new(path, handler, HTTPMethod::PATCH));
     }
 
-    pub fn post(&mut self, path: &'static str, handler: RequestHandler) {
+    pub fn post<T>(&mut self, path: &'static str, handler: T)
+    where
+        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+    {
         self.add_path(Path::new(path, handler, HTTPMethod::POST));
     }
 
-    pub fn put(&mut self, path: &'static str, handler: RequestHandler) {
+    pub fn put<T>(&mut self, path: &'static str, handler: T)
+    where
+        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+    {
         self.add_path(Path::new(path, handler, HTTPMethod::PUT));
     }
 
-    pub fn trace(&mut self, path: &'static str, handler: RequestHandler) {
+    pub fn trace<T>(&mut self, path: &'static str, handler: T)
+    where
+        T: Fn(HTTPRequest, &PathMap) -> HTTPResponse + 'a,
+    {
         self.add_path(Path::new(path, handler, HTTPMethod::TRACE));
     }
 
-    fn log(&mut self, req: &HTTPRequest, resp: &HTTPResponse) {
+    fn log(&self, req: &HTTPRequest, resp: &HTTPResponse) {
         eprintln!(
             "..{:?} {} {} - {}",
             req.method, resp.status, resp.status_text, req.raw_path
         );
     }
 
-    pub fn on_any(&mut self, handler: EventHandler) {
+    pub fn on_any<T>(&mut self, handler: T)
+    where
+        T: Fn(&HTTPRequest, &mut HTTPResponse) + 'a,
+    {
         self.listeners.push(Listener::new(handler));
     }
 }
 
-pub struct TcpServer {
+pub struct TcpServer<'a> {
     pub addr: &'static str,
     pub port: u32,
-    listeners: Vec<SimpleEventHandler>,
-    on_ready: Option<SoftListener>,
-    on_shutdown: Option<SoftListener>, // TODO: Implement on_shutdown
+    listeners: Vec<SimpleEventHandler<'a>>,
+    on_ready: Option<SoftListener<'a>>,
+    on_shutdown: Option<SoftListener<'a>>, // TODO: Implement on_shutdown
     max_buffer: Option<usize>,
 }
 
-impl Server<&mut TcpStream, Request> for TcpServer {
-    fn handle_request(&mut self, stream: &mut TcpStream, req: Request) {
+impl Server<&mut TcpStream, Request> for TcpServer<'_> {
+    fn handle_request(&self, stream: &mut TcpStream, req: Request) {
         for listener in &self.listeners {
-            if let Some(response) = listener(stream, req.clone()) {
+            if let Some(response) = listener.0(stream, req.clone()) {
                 let _ = stream.write(&response);
             }
         }
     }
 
-    fn run(&mut self) {
+    fn run(&self) {
         let listener = TcpListener::bind(format!("{}:{}", self.addr, self.port)).unwrap();
         if let Some(ready_fn) = &self.on_ready {
             ready_fn.notify();
@@ -858,17 +897,9 @@ impl Server<&mut TcpStream, Request> for TcpServer {
             }
         }
     }
-
-    fn on_ready(&mut self, handler: SoftEventHandler) {
-        self.on_ready = Some(SoftListener::new(handler));
-    }
-
-    fn on_shutdown(&mut self, handler: SoftEventHandler) {
-        self.on_shutdown = Some(SoftListener::new(handler));
-    }
 }
 
-impl TcpServer {
+impl<'a> TcpServer<'a> {
     pub fn new(addr: &'static str, port: u32) -> Self {
         Self {
             addr,
@@ -880,8 +911,18 @@ impl TcpServer {
         }
     }
 
-    pub fn on_request(&mut self, handler: SimpleEventHandler) {
-        self.listeners.push(handler);
+    pub fn on_ready<T>(&mut self, handler: T)
+    where
+        T: Fn() + 'a,
+    {
+        self.on_ready = Some(SoftListener::new(handler));
+    }
+
+    pub fn on_shutdown<T>(&mut self, handler: T)
+    where
+        T: Fn() + 'a,
+    {
+        self.on_shutdown = Some(SoftListener::new(handler));
     }
 
     pub fn set_buffer_to(&mut self, size: usize) {
@@ -889,9 +930,9 @@ impl TcpServer {
     }
 }
 
-pub enum MatchingServer {
-    HTTP(HTTPServer),
-    TCP(TcpServer),
+pub enum MatchingServer<'a> {
+    HTTP(HTTPServer<'a>),
+    TCP(TcpServer<'a>),
 }
 
 /// Iniitialize a new http server
