@@ -2,7 +2,7 @@ use mini_server::*;
 
 const INDEX_JS: &[u8] = include_bytes!("./js/index.js");
 
-fn index(_: HTTPRequest, _: &PathMap) -> HTTPResponse {
+fn index(_: HTTPRequest, _: PathMap) -> HTTPResponse {
     let mut response = HTTPResponse::default();
     response.set_header("Content-Type", "text/html");
     let html_content = include_bytes!("./index.html");
@@ -12,7 +12,7 @@ fn index(_: HTTPRequest, _: &PathMap) -> HTTPResponse {
 }
 
 fn main() {
-    let mut app = http_server!("localhost", 4221);
+    let mut app = HTTPServer::default();
 
     app.get("/", index);
     app.get("/index.html", index);
