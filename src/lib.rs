@@ -2,6 +2,8 @@ use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 use std::iter::zip;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::sync::Arc;
+pub mod worker;
 
 /// `CRLF` represents the Carriage Return (CR) and Line Feed (LF)
 /// characters combined ("\r\n"). It is commonly used as the
@@ -95,10 +97,10 @@ pub type Headers = HashMap<String, String>;
 /// The parse_path function takes a string representing an HTTP request path and extracts the path and URL
 /// parameters (if any) from it. It returns a tuple containing the path and a URLSearchParams
 /// `(HashMap<String, String>)` representing the parsed URL parameters.
-fn parse_path(data: String) -> (String, URLSearchParams) {
+fn parse_path(data: &str) -> (String, URLSearchParams) {
     let split_data = data.split_once('?');
     if split_data.is_none() {
-        (data, HashMap::new())
+        (data.into(), HashMap::new())
     } else {
         let (ph, pr) = split_data.unwrap();
         let params: URLSearchParams = pr
@@ -115,82 +117,34 @@ fn parse_path(data: String) -> (String, URLSearchParams) {
     }
 }
 
-/// The parse_http_req function takes a string representing an entire HTTP request and parses
-/// it into a `HTTPRequest` struct, extracting information such as the HTTP method, path,
-/// headers, and body.
-fn parse_http_req(body: Vec<u8>, head: String) -> HTTPRequest {
-    let mut req = HTTPRequest {
-        body,
-        ..Default::default()
-    };
-
-    for chunck in head.lines() {
-        if chunck.starts_with("GET")
-            || chunck.starts_with("HEAD")
-            || chunck.starts_with("POST")
-            || chunck.starts_with("PUT")
-            || chunck.starts_with("DELETE")
-            || chunck.starts_with("CONNECT")
-            || chunck.starts_with("OPTIONS")
-            || chunck.starts_with("TRACE")
-            || chunck.starts_with("PATCH")
-        {
-            let head: Vec<&str> = chunck.split_whitespace().collect();
-            req.method = get_method(head[0]);
-            req.raw_path = head[1].to_string();
-            let (path, params) = parse_path(head[1].to_string());
-            req.path = path;
-            req.params = params;
-            let version: Vec<&str> = head[2].split('/').collect();
-            req.http_version = version[1].to_string();
-            continue;
+fn get_method(raw: Option<&str>) -> HTTPMethod {
+    if let Some(raw) = raw {
+        match raw {
+            "GET" => HTTPMethod::GET,
+            "HEAD" => HTTPMethod::HEAD,
+            "POST" => HTTPMethod::POST,
+            "PUT" => HTTPMethod::PUT,
+            "DELETE" => HTTPMethod::DELETE,
+            "CONNECT" => HTTPMethod::CONNECT,
+            "OPTIONS" => HTTPMethod::OPTIONS,
+            "TRACE" => HTTPMethod::TRACE,
+            "PATCH" => HTTPMethod::PATCH,
+            _ => HTTPMethod::GET,
         }
-
-        if let Some((field, value)) = chunck.split_once(':') {
-            let value = value.trim().to_string();
-            req.headers.insert(field.to_string().to_lowercase(), value);
-        }
+    } else {
+        HTTPMethod::GET
     }
-    req
 }
 
-fn get_body_len(head: String) -> Option<usize> {
-    for chunck in head.lines() {
-        if chunck.starts_with("GET")
-            || chunck.starts_with("HEAD")
-            || chunck.starts_with("POST")
-            || chunck.starts_with("PUT")
-            || chunck.starts_with("DELETE")
-            || chunck.starts_with("CONNECT")
-            || chunck.starts_with("OPTIONS")
-            || chunck.starts_with("TRACE")
-            || chunck.starts_with("PATCH")
-        {
-            continue;
+fn get_version(v: Option<u8>) -> String {
+    if let Some(v) = v {
+        if v == 1 {
+            return "1.1".into();
+        } else {
+            return "1.2".into();
         }
-
-        if let Some((field, value)) = chunck.split_once(':') {
-            if field.to_lowercase().trim() == "content-length" {
-                return Some(value.trim().parse().unwrap());
-            }
-        }
-    }
-
-    None
-}
-
-fn get_method(raw: &str) -> HTTPMethod {
-    match raw {
-        "GET" => HTTPMethod::GET,
-        "HEAD" => HTTPMethod::HEAD,
-        "POST" => HTTPMethod::POST,
-        "PUT" => HTTPMethod::PUT,
-        "DELETE" => HTTPMethod::DELETE,
-        "CONNECT" => HTTPMethod::CONNECT,
-        "OPTIONS" => HTTPMethod::OPTIONS,
-        "TRACE" => HTTPMethod::TRACE,
-        "PATCH" => HTTPMethod::PATCH,
-        _ => HTTPMethod::GET,
+    } else {
+        "1.1".into()
     }
 }
 
@@ -403,7 +357,7 @@ impl HTTPResponse {
 /// Get the value of a path dynamic variable
 /// ```rust
 /// use mini_server::*;
-/// let mut app = HTTPServer::new("localhost", 4221);
+/// let mut app = HTTPServer::new("localhost:4221");
 ///
 /// app.get("/hello/@name/#age", |_, exprs| {
 ///     let name = expand!(exprs, "name", PathExpr::String);
@@ -434,20 +388,53 @@ pub type PathMap = HashMap<String, PathExpr>;
 
 /// RequestHandler type is a function type that defines the signature for handling HTTP requests.
 /// It takes `HTTPRequest` and `HashMap<String, PathExpr>` as a parameter and returns an `HTTPResponse`
-pub struct RequestHandler<'a>(Box<dyn Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a>);
+pub struct RequestHandler(
+    Arc<Box<dyn Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static>>,
+);
+
+impl Clone for RequestHandler {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 /// EventHandler type is a function type that defines the signature for handling events triggered
 /// by HTTP requests. It takes references to an `HTTPRequest` and a mutable `HTTPResponse` as parameters.
-pub struct EventHandler<'a>(Box<dyn Fn(&HTTPRequest, &mut HTTPResponse) + 'a>);
+pub struct EventHandler(Arc<Box<dyn Fn(&HTTPRequest, &mut HTTPResponse) + Send + Sync + 'static>>);
 
-pub struct SimpleEventHandler<'a>(Box<dyn Fn(&mut TcpStream, Request) -> Option<Response> + 'a>);
+impl Clone for EventHandler {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+
+pub struct SimpleEventHandler(
+    Arc<Box<dyn Fn(&mut TcpStream, Request) -> Option<Response> + Send + Sync + 'static>>,
+);
+
+impl Clone for SimpleEventHandler {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
 /// The SoftEventHandler type is a function type that defines the signature for handling soft events,
 /// typically without specific request or response parameters.
-pub struct SoftEventHandler<'a>(Box<dyn Fn() + 'a>);
+pub struct SoftEventHandler(Arc<Box<dyn Fn() + Send + Sync + 'static>>);
 
-pub struct ErrorEventHandler<'a>(Box<dyn Fn(RunError) + 'a>);
+impl Clone for SoftEventHandler {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 
+pub struct ErrorEventHandler(Arc<Box<dyn Fn(RunError) + Send + Sync + 'static>>);
+
+impl Clone for ErrorEventHandler {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
 /// The HTTPMethod enum represents the HTTP methods that can be used in HTTP requests.
 /// Each variant corresponds to a standard HTTP method.
 #[derive(Debug, PartialEq, Clone)]
@@ -479,38 +466,72 @@ pub enum PathExpr {
     Number(i32),
 }
 
-struct Path<'a> {
+pub struct Path {
     pub expr: String,
-    pub handler: RequestHandler<'a>,
+    pub handler: RequestHandler,
     pub method: HTTPMethod,
 }
 
-impl PartialEq for Path<'_> {
+impl Clone for Path {
+    fn clone(&self) -> Self {
+        Self {
+            expr: self.expr.clone(),
+            handler: self.handler.clone(),
+            method: self.method.clone(),
+        }
+    }
+}
+
+impl PartialEq for Path {
     fn eq(&self, other: &Self) -> bool {
         self.r#match(other.expr.clone()) && self.method == other.method
     }
 }
 
-struct Listener<'a> {
-    handler: EventHandler<'a>,
+pub struct Listener {
+    handler: EventHandler,
 }
 
-struct SoftListener<'a> {
-    handler: SoftEventHandler<'a>,
+impl Clone for Listener {
+    fn clone(&self) -> Self {
+        Self {
+            handler: self.handler.clone(),
+        }
+    }
 }
 
-struct ErrorListener<'a> {
-    handler: ErrorEventHandler<'a>,
+pub struct SoftListener {
+    handler: SoftEventHandler,
 }
 
-impl<'a> Path<'a> {
+impl Clone for SoftListener {
+    fn clone(&self) -> Self {
+        Self {
+            handler: self.handler.clone(),
+        }
+    }
+}
+
+pub struct ErrorListener {
+    handler: ErrorEventHandler,
+}
+
+impl Clone for ErrorListener {
+    fn clone(&self) -> Self {
+        Self {
+            handler: self.handler.clone(),
+        }
+    }
+}
+
+impl Path {
     pub fn new<T>(expr: &str, handler: T, method: HTTPMethod) -> Self
     where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
     {
         Path {
             expr: expr.to_string(),
-            handler: RequestHandler(Box::new(handler)),
+            handler: RequestHandler(Arc::new(Box::new(handler))),
             method,
         }
     }
@@ -574,13 +595,13 @@ impl<'a> Path<'a> {
     }
 }
 
-impl<'a> Listener<'a> {
+impl Listener {
     pub fn new<T>(handler: T) -> Self
     where
-        T: Fn(&HTTPRequest, &mut HTTPResponse) + 'a,
+        T: Fn(&HTTPRequest, &mut HTTPResponse) + Send + Sync + 'static,
     {
         Listener {
-            handler: EventHandler(Box::new(handler)),
+            handler: EventHandler(Arc::new(Box::new(handler))),
         }
     }
 
@@ -589,13 +610,13 @@ impl<'a> Listener<'a> {
     }
 }
 
-impl<'a> SoftListener<'a> {
+impl SoftListener {
     pub fn new<T>(handler: T) -> Self
     where
-        T: Fn() + 'a,
+        T: Fn() + Send + Sync + 'static,
     {
         SoftListener {
-            handler: SoftEventHandler(Box::new(handler)),
+            handler: SoftEventHandler(Arc::new(Box::new(handler))),
         }
     }
 
@@ -604,13 +625,13 @@ impl<'a> SoftListener<'a> {
     }
 }
 
-impl<'a> ErrorListener<'a> {
+impl ErrorListener {
     pub fn new<T>(handler: T) -> Self
     where
-        T: Fn(RunError) + 'a,
+        T: Fn(RunError) + Send + Sync + 'static,
     {
         Self {
-            handler: ErrorEventHandler(Box::new(handler)),
+            handler: ErrorEventHandler(Arc::new(Box::new(handler))),
         }
     }
 
@@ -618,15 +639,6 @@ impl<'a> ErrorListener<'a> {
         (self.handler.0)(error)
     }
 }
-
-pub enum ServerKind {
-    TCP,
-    HTTP,
-    // TODO: UDP,
-    // TODO: WEBSOCKET,
-}
-
-pub struct MiniServer;
 
 pub trait Server<U, V> {
     fn handle_request(&self, stream: U, req: V);
@@ -646,7 +658,7 @@ pub type Response = Vec<u8>;
 /// ```rust
 /// use mini_server::*;
 ///
-/// let mut app = HTTPServer::new();
+/// let mut app = HTTPServer::default();
 ///
 /// app.get("/", |_, _| {
 ///     let mut response = HTTPResponse::default();
@@ -665,16 +677,17 @@ pub type Response = Vec<u8>;
 ///
 /// `#` and `@` are prefixes for dynamic values. `#` for denoting numbers
 /// and `@` for strings
-pub struct HTTPServer<'a> {
+pub struct HTTPServer {
     pub addr: Vec<SocketAddr>,
-    paths: Vec<Path<'a>>,
-    listeners: Vec<Listener<'a>>,
-    on_ready: Option<SoftListener<'a>>,
-    on_shutdown: Option<SoftListener<'a>>, // TODO: Implement on_shutdown
-    on_error: Option<ErrorListener<'a>>,
+    pub paths: Vec<Path>,
+    pub listeners: Vec<Listener>,
+    pub on_ready: Option<SoftListener>,
+    pub on_shutdown: Option<SoftListener>, // TODO: Implement on_shutdown
+    pub on_error: Option<ErrorListener>,
+    pub thread_pool: worker::ThreadPool,
 }
 
-impl Default for HTTPServer<'_> {
+impl Default for HTTPServer {
     fn default() -> Self {
         Self {
             addr: vec![SocketAddr::new(
@@ -686,6 +699,21 @@ impl Default for HTTPServer<'_> {
             on_ready: None,
             on_shutdown: None,
             on_error: None,
+            thread_pool: worker::ThreadPool::new(14),
+        }
+    }
+}
+
+impl Clone for HTTPServer {
+    fn clone(&self) -> Self {
+        Self {
+            addr: self.addr.clone(),
+            paths: self.paths.clone(),
+            listeners: self.listeners.clone(),
+            on_ready: self.on_ready.clone(),
+            on_shutdown: self.on_shutdown.clone(),
+            on_error: self.on_error.clone(),
+            thread_pool: worker::EMPTY_POOL,
         }
     }
 }
@@ -704,7 +732,7 @@ impl std::fmt::Display for RunError {
     }
 }
 
-impl Server<&mut TcpStream, HTTPRequest> for HTTPServer<'_> {
+impl Server<&mut TcpStream, HTTPRequest> for HTTPServer {
     fn handle_request(&self, stream: &mut TcpStream, req: HTTPRequest) {
         let mut handled = false;
         for path in &self.paths {
@@ -714,7 +742,6 @@ impl Server<&mut TcpStream, HTTPRequest> for HTTPServer<'_> {
                     listener.notify(&req, &mut response);
                 }
                 let _ = stream.write(response.raw().as_slice());
-                self.log(&req, &response);
                 handled = true;
                 break;
             }
@@ -734,7 +761,6 @@ impl Server<&mut TcpStream, HTTPRequest> for HTTPServer<'_> {
                 listener.notify(&req, &mut response);
             }
             let _ = stream.write(response.raw().as_slice());
-            self.log(&req, &response);
         }
     }
 
@@ -744,18 +770,18 @@ impl Server<&mut TcpStream, HTTPRequest> for HTTPServer<'_> {
                 ready_fn.notify();
             }
 
-            eprintln!("=== miniserver on {:?}", self.addr);
             for stream in listener.incoming() {
                 match stream {
-                    Ok(mut stream) => {
-                        // let mut data = vec![0; max_buffer];
-                        // let _ = stream.read(&mut data);
-                        // let request = parse_http_req(data);
-                        // self.handle_request(&mut stream, request);
-                        self.handle_connection(&mut stream);
+                    Ok(stream) => {
+                        let self_clone = Arc::new(self.clone());
+                        self.thread_pool.execute(move || {
+                            let s = self_clone.clone();
+                            let mut st = stream;
+                            s.handle_connection(&mut st);
+                        });
                     }
                     Err(e) => {
-                        eprintln!("..error: {e}")
+                        eprintln!("{e}")
                     }
                 }
             }
@@ -767,7 +793,7 @@ impl Server<&mut TcpStream, HTTPRequest> for HTTPServer<'_> {
     }
 }
 
-impl<'a> HTTPServer<'a> {
+impl HTTPServer {
     pub fn new<A>(addr: A) -> Self
     where
         A: std::net::ToSocketAddrs,
@@ -779,31 +805,32 @@ impl<'a> HTTPServer<'a> {
             on_ready: None,
             on_shutdown: None,
             on_error: None,
+            thread_pool: worker::ThreadPool::new(14),
         }
     }
 
     pub fn on_ready<T>(&mut self, handler: T)
     where
-        T: Fn() + 'a,
+        T: Fn() + Send + Sync + 'static,
     {
         self.on_ready = Some(SoftListener::new(handler));
     }
 
     pub fn on_shutdown<T>(&mut self, handler: T)
     where
-        T: Fn() + 'a,
+        T: Fn() + Send + Sync + 'static,
     {
         self.on_shutdown = Some(SoftListener::new(handler));
     }
 
     pub fn on_error<T>(&mut self, handler: T)
     where
-        T: Fn(RunError) + 'a,
+        T: Fn(RunError) + Send + Sync + 'static,
     {
         self.on_error = Some(ErrorListener::new(handler));
     }
 
-    fn add_path(&mut self, path: Path<'a>) {
+    fn add_path(&mut self, path: Path) {
         let path_name = path.expr.clone();
         if !self.paths.contains(&path) {
             self.paths.push(path);
@@ -816,117 +843,167 @@ impl<'a> HTTPServer<'a> {
     }
 
     fn handle_connection(&self, stream: &mut TcpStream) {
-        let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
-        let mut head = String::new();
-        'read_req_head: loop {
-            let mut temp = String::new();
-            reader.read_line(&mut temp).unwrap();
+        match stream.try_clone() {
+            Ok(s) => {
+                let mut reader = std::io::BufReader::new(s);
+                let mut head = String::new();
+                'read_req_head: loop {
+                    let mut temp = String::new();
+                    let _ = reader.read_line(&mut temp);
 
-            if temp.trim().is_empty() {
-                break 'read_req_head;
-            } else {
-                head.push_str(&temp);
+                    if temp.trim().is_empty() {
+                        break 'read_req_head;
+                    } else {
+                        head.push_str(&temp);
+                    }
+                }
+
+                let mut headers = [httparse::EMPTY_HEADER; 16];
+                let mut req = httparse::Request::new(&mut headers);
+                let is_complete = req.parse(&head.as_bytes()).unwrap().is_complete();
+                let raw_path = match req.path {
+                    Some(p) => p.to_string(),
+                    None => String::from("/"),
+                };
+                let (path, params) = parse_path(&raw_path);
+
+                let mut parsed_headers: HashMap<String, String> = HashMap::new();
+                for field in req.headers {
+                    parsed_headers.insert(
+                        field.name.to_lowercase(),
+                        String::from_utf8(field.value.to_vec()).unwrap(),
+                    );
+                }
+
+                let body_len: Option<usize> =
+                    if let Some(len) = parsed_headers.get("content-length") {
+                        Some(len.parse().unwrap())
+                    } else {
+                        None
+                    };
+
+                let method = get_method(req.method);
+
+                if let Some(body_size) = body_len {
+                    let mut body_buf = vec![0; body_size];
+                    let _ = reader.read_exact(&mut body_buf);
+                    if is_complete {
+                        self.handle_request(
+                            stream,
+                            HTTPRequest {
+                                method,
+                                path,
+                                raw_path,
+                                params,
+                                http_version: if req.version.unwrap() == 1 {
+                                    "1.1".into()
+                                } else {
+                                    "1.2".into()
+                                },
+                                headers: parsed_headers,
+                                body: body_buf,
+                            },
+                        );
+                    };
+                } else {
+                    let request = HTTPRequest {
+                        method,
+                        path,
+                        raw_path,
+                        params,
+                        http_version: get_version(req.version),
+                        headers: parsed_headers,
+                        body: vec![],
+                    };
+                    self.handle_request(stream, request);
+                }
             }
-        }
-
-        if let Some(body_size) = get_body_len(head.clone()) {
-            let mut body_buf = vec![0; body_size];
-            let _ = reader.read_exact(&mut body_buf);
-            let request = parse_http_req(body_buf, head);
-            self.handle_request(stream, request);
-        } else {
-            let request = parse_http_req(vec![], head);
-            self.handle_request(stream, request);
+            Err(e) => {
+                eprintln!("{e}");
+            }
         }
     }
 
     pub fn connect<T>(&mut self, path: &'static str, handler: T)
     where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
     {
         self.add_path(Path::new(path, handler, HTTPMethod::CONNECT));
     }
 
     pub fn delete<T>(&mut self, path: &'static str, handler: T)
     where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
     {
         self.add_path(Path::new(path, handler, HTTPMethod::DELETE));
     }
 
     pub fn get<T>(&mut self, path: &'static str, handler: T)
     where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
     {
         self.add_path(Path::new(path, handler, HTTPMethod::GET));
     }
 
     pub fn head<T>(&mut self, path: &'static str, handler: T)
     where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
     {
         self.add_path(Path::new(path, handler, HTTPMethod::HEAD));
     }
 
     pub fn options<T>(&mut self, path: &'static str, handler: T)
     where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
     {
         self.add_path(Path::new(path, handler, HTTPMethod::OPTIONS));
     }
 
     pub fn patch<T>(&mut self, path: &'static str, handler: T)
     where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
     {
         self.add_path(Path::new(path, handler, HTTPMethod::PATCH));
     }
 
     pub fn post<T>(&mut self, path: &'static str, handler: T)
     where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
     {
         self.add_path(Path::new(path, handler, HTTPMethod::POST));
     }
 
     pub fn put<T>(&mut self, path: &'static str, handler: T)
     where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
     {
         self.add_path(Path::new(path, handler, HTTPMethod::PUT));
     }
 
     pub fn trace<T>(&mut self, path: &'static str, handler: T)
     where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + 'a,
+        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
     {
         self.add_path(Path::new(path, handler, HTTPMethod::TRACE));
     }
 
-    fn log(&self, req: &HTTPRequest, resp: &HTTPResponse) {
-        eprintln!(
-            "..{:?} {} {} - {}",
-            req.method, resp.status, resp.status_text, req.raw_path
-        );
-    }
-
     pub fn on_any<T>(&mut self, handler: T)
     where
-        T: Fn(&HTTPRequest, &mut HTTPResponse) + 'a,
+        T: Fn(&HTTPRequest, &mut HTTPResponse) + Send + Sync + 'static,
     {
         self.listeners.push(Listener::new(handler));
     }
 }
 
-pub struct TcpServer<'a> {
+pub struct TcpServer {
     pub addr: Vec<SocketAddr>,
-    listeners: Vec<SimpleEventHandler<'a>>,
-    on_ready: Option<SoftListener<'a>>,
-    on_shutdown: Option<SoftListener<'a>>, // TODO: Implement on_shutdown
+    listeners: Vec<SimpleEventHandler>,
+    on_ready: Option<SoftListener>,
+    on_shutdown: Option<SoftListener>, // TODO: Implement on_shutdown
     max_buffer: Option<usize>,
 }
 
-impl Default for TcpServer<'_> {
+impl Default for TcpServer {
     fn default() -> Self {
         Self {
             addr: vec![SocketAddr::new(
@@ -941,7 +1018,7 @@ impl Default for TcpServer<'_> {
     }
 }
 
-impl Server<&mut TcpStream, Request> for TcpServer<'_> {
+impl Server<&mut TcpStream, Request> for TcpServer {
     fn handle_request(&self, stream: &mut TcpStream, req: Request) {
         for listener in &self.listeners {
             if let Some(response) = listener.0(stream, req.clone()) {
@@ -956,8 +1033,6 @@ impl Server<&mut TcpStream, Request> for TcpServer<'_> {
             ready_fn.notify();
         }
 
-        eprintln!("=== tcp miniserver on: {:?}", self.addr);
-
         for stream in listener.incoming() {
             let mut max_buffer = MAX_BUFFER;
             if let Some(mxb) = self.max_buffer {
@@ -970,14 +1045,14 @@ impl Server<&mut TcpStream, Request> for TcpServer<'_> {
                     self.handle_request(&mut stream, data);
                 }
                 Err(e) => {
-                    eprintln!("..error: {e}")
+                    eprintln!("{e}")
                 }
             }
         }
     }
 }
 
-impl<'a> TcpServer<'a> {
+impl TcpServer {
     pub fn new<A>(addr: A) -> Self
     where
         A: std::net::ToSocketAddrs,
@@ -993,71 +1068,19 @@ impl<'a> TcpServer<'a> {
 
     pub fn on_ready<T>(&mut self, handler: T)
     where
-        T: Fn() + 'a,
+        T: Fn() + Send + Sync + 'static,
     {
         self.on_ready = Some(SoftListener::new(handler));
     }
 
     pub fn on_shutdown<T>(&mut self, handler: T)
     where
-        T: Fn() + 'a,
+        T: Fn() + Send + Sync + 'static,
     {
         self.on_shutdown = Some(SoftListener::new(handler));
     }
 
     pub fn set_buffer_to(&mut self, size: usize) {
         self.max_buffer = Some(size);
-    }
-}
-
-pub enum MatchingServer<'a> {
-    HTTP(HTTPServer<'a>),
-    TCP(TcpServer<'a>),
-}
-
-/// Iniitialize a new http server
-/// ```rust
-/// use mini_server::*;
-///
-/// let mut app = http_server!("localhost", 4221);
-/// ```
-#[deprecated(
-    since = "0.1.2",
-    note = "Please use `mini_server::TcpServer::default()` or `mini_server::HTTPServer::default()`"
-)]
-#[macro_export]
-macro_rules! http_server {
-    ($domain: expr, $port: expr) => {
-        mini_server::HTTPServer::new(format!("{}:{}", $domain, $port))
-    };
-}
-
-/// Iniitialize a new tcp server
-/// ```rust
-/// use mini_server::*;
-///
-/// let mut app = tcp_server!("localhost", 4221);
-/// ```
-#[deprecated(
-    since = "0.1.2",
-    note = "Please use `mini_server::TcpServer::default()` or `mini_server::HTTPServer::default()`"
-)]
-#[macro_export]
-macro_rules! tcp_server {
-    ($domain: expr, $port: expr) => {
-        mini_server::TcpServer::new(format!("{}:{}", $domain, $port))
-    };
-}
-
-impl MiniServer {
-    #[deprecated(
-        since = "0.1.2",
-        note = "Please use `mini_server::TcpServer::default()` or `mini_server::HTTPServer::default()`"
-    )]
-    pub fn init(addr: &'static str, port: u32, kind: ServerKind) -> MatchingServer {
-        match kind {
-            ServerKind::TCP => MatchingServer::TCP(TcpServer::new(format!("{addr}:{port}"))),
-            ServerKind::HTTP => MatchingServer::HTTP(HTTPServer::new(format!("{addr}:{port}"))),
-        }
     }
 }
