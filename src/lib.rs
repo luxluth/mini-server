@@ -2,7 +2,11 @@ use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 use std::iter::zip;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+
+#[macro_use]
+mod macros;
 pub mod worker;
 
 /// `CRLF` represents the Carriage Return (CR) and Line Feed (LF)
@@ -47,6 +51,7 @@ pub const CRLF: &str = "\r\n";
 ///
 /// ## Note
 /// > The max_buffer is configurable when configurating a new server instance
+/// > It is only used in the [TcpServer]
 pub const MAX_BUFFER: usize = 16384;
 
 /// The `HTTPRequest` struct represents an HTTP request received by
@@ -199,6 +204,11 @@ impl Default for HTTPResponse {
         }
     }
 }
+
+response_from_for!(&[u8] => HTTPResponse);
+response_from_for!(Vec<u8> => HTTPResponse);
+response_from_for!(&str => HTTPResponse);
+response_from_for!(String => HTTPResponse);
 
 impl HTTPResponse {
     /// Get a new HTTPResponse struct
@@ -363,14 +373,7 @@ impl HTTPResponse {
 ///     let name = expand!(exprs, "name", PathExpr::String);
 ///     let age = expand!(exprs, "age", PathExpr::Number);
 ///
-///     let mut response = HTTPResponse::default();
-///     response.set_body(
-///         format!("Hello {name}, you are {age}!")
-///             .as_bytes()
-///             .to_vec(),
-///     );
-///
-///     response
+///     format!("Hello {name}, you are {age}!").into()
 /// });
 /// ```
 #[macro_export]
@@ -661,10 +664,7 @@ pub type Response = Vec<u8>;
 /// let mut app = HTTPServer::default();
 ///
 /// app.get("/", |_, _| {
-///     let mut response = HTTPResponse::default();
-///     response.set_body(b"Hello World!".to_vec());
-///
-///     response
+///     "Hello World!".into()
 /// });
 ///
 /// ```
@@ -685,7 +685,10 @@ pub struct HTTPServer {
     pub on_shutdown: Option<SoftListener>, // TODO: Implement on_shutdown
     pub on_error: Option<ErrorListener>,
     pub thread_pool: worker::ThreadPool,
+    pub should_shutdown: ShutdownWrapper,
 }
+
+pub struct ShutdownWrapper(AtomicBool);
 
 impl Default for HTTPServer {
     fn default() -> Self {
@@ -700,12 +703,15 @@ impl Default for HTTPServer {
             on_shutdown: None,
             on_error: None,
             thread_pool: worker::ThreadPool::new(14),
+            should_shutdown: ShutdownWrapper(AtomicBool::new(false)),
         }
     }
 }
 
 impl Clone for HTTPServer {
     fn clone(&self) -> Self {
+        let new_should_shutdown = self.should_shutdown.0.load(Ordering::Relaxed);
+
         Self {
             addr: self.addr.clone(),
             paths: self.paths.clone(),
@@ -714,6 +720,7 @@ impl Clone for HTTPServer {
             on_shutdown: self.on_shutdown.clone(),
             on_error: self.on_error.clone(),
             thread_pool: worker::EMPTY_POOL,
+            should_shutdown: ShutdownWrapper(AtomicBool::new(new_should_shutdown)),
         }
     }
 }
@@ -806,6 +813,7 @@ impl HTTPServer {
             on_shutdown: None,
             on_error: None,
             thread_pool: worker::ThreadPool::new(14),
+            should_shutdown: ShutdownWrapper(AtomicBool::new(false)),
         }
     }
 
@@ -814,6 +822,10 @@ impl HTTPServer {
         T: Fn() + Send + Sync + 'static,
     {
         self.on_ready = Some(SoftListener::new(handler));
+    }
+
+    pub fn shutdown(&self) {
+        self.should_shutdown.0.store(true, Ordering::Relaxed)
     }
 
     pub fn on_shutdown<T>(&mut self, handler: T)

@@ -6,11 +6,12 @@ fn main() {
         ..Default::default()
     };
 
-    app.get("/", |_, _| {
-        let mut response = HTTPResponse::default();
-        response.set_body(b"Hello World!".to_vec());
+    let addr = app.addr.clone()[0];
 
-        response
+    app.get("/", |_, _| "Hello World!".into());
+
+    app.on_ready(move || {
+        eprintln!("Running on {addr}");
     });
 
     app.run();
