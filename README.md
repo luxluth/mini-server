@@ -15,10 +15,7 @@ fn main() {
     let mut app = HTTPServer::default();
 
     app.get("/", |_, _| {
-        let mut response = HTTPResponse::default();
-        response.set_body(b"Hello World!".to_vec());
-
-        response
+        "Hello World!".into()
     });
 
     app.run();
@@ -45,14 +42,8 @@ fn main() {
     let name = expand!(exprs, "name", PathExpr::String);
     let age = expand!(exprs, "age", PathExpr::Number);
 
-    let mut response = HTTPResponse::default();
-    response.set_body(
-      format!("Hello {name}, you are {age}!")
-        .as_bytes()
-        .to_vec(),
-    );
+    format!("Hello {name}, you are {age}!").into()
 
-    response
   });
 }
 ```
