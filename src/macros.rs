@@ -1,10 +1,10 @@
 #[macro_export]
 macro_rules! response_from_for {
-    ($from:ty => $to:ty) => {
-        impl From<$from> for $to {
-            fn from(value: $from) -> Self {
-                let mut resp = Self::default();
-                resp.set_body(value.into());
+    ($for:ty) => {
+        impl Into<$crate::HTTPResponse> for $for {
+            fn into(self) -> $crate::HTTPResponse {
+                let mut resp = $crate::HTTPResponse::default();
+                resp.set_body(self.into());
                 resp
             }
         }

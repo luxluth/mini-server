@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::io::{BufRead, Read, Write};
 use std::iter::zip;
 use std::net::{Ipv4Addr, SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 #[macro_use]
 mod macros;
@@ -173,7 +173,7 @@ fn get_version(v: Option<u8>) -> String {
 ///     }
 /// }
 /// ```
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct HTTPResponse {
     /// The response body as a vector of bytes.
     pub body: Vec<u8>,
@@ -205,10 +205,10 @@ impl Default for HTTPResponse {
     }
 }
 
-response_from_for!(&[u8] => HTTPResponse);
-response_from_for!(Vec<u8> => HTTPResponse);
-response_from_for!(&str => HTTPResponse);
-response_from_for!(String => HTTPResponse);
+response_from_for!(&[u8]);
+response_from_for!(&str);
+response_from_for!(Vec<u8>);
+response_from_for!(String);
 
 impl HTTPResponse {
     /// Get a new HTTPResponse struct
@@ -800,6 +800,33 @@ impl Server<&mut TcpStream, HTTPRequest> for HTTPServer {
     }
 }
 
+macro_rules! define_all_route_methods {
+    ($($name:ident => $method:expr),* $(,)?) => {
+        impl HTTPServer {
+            $(
+                pub fn $name<T>(&mut self, path: &'static str, handler: T)
+                where
+                    T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
+                {
+                    self.add_path(Path::new(path, handler, $method));
+                }
+            )*
+        }
+    };
+}
+
+define_all_route_methods! {
+    get => HTTPMethod::GET,
+    post => HTTPMethod::POST,
+    put => HTTPMethod::PUT,
+    delete => HTTPMethod::DELETE,
+    patch => HTTPMethod::PATCH,
+    options => HTTPMethod::OPTIONS,
+    head => HTTPMethod::HEAD,
+    trace => HTTPMethod::TRACE,
+    connect => HTTPMethod::CONNECT,
+}
+
 impl HTTPServer {
     pub fn new<A>(addr: A) -> Self
     where
@@ -934,69 +961,6 @@ impl HTTPServer {
                 eprintln!("{e}");
             }
         }
-    }
-
-    pub fn connect<T>(&mut self, path: &'static str, handler: T)
-    where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
-    {
-        self.add_path(Path::new(path, handler, HTTPMethod::CONNECT));
-    }
-
-    pub fn delete<T>(&mut self, path: &'static str, handler: T)
-    where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
-    {
-        self.add_path(Path::new(path, handler, HTTPMethod::DELETE));
-    }
-
-    pub fn get<T>(&mut self, path: &'static str, handler: T)
-    where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
-    {
-        self.add_path(Path::new(path, handler, HTTPMethod::GET));
-    }
-
-    pub fn head<T>(&mut self, path: &'static str, handler: T)
-    where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
-    {
-        self.add_path(Path::new(path, handler, HTTPMethod::HEAD));
-    }
-
-    pub fn options<T>(&mut self, path: &'static str, handler: T)
-    where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
-    {
-        self.add_path(Path::new(path, handler, HTTPMethod::OPTIONS));
-    }
-
-    pub fn patch<T>(&mut self, path: &'static str, handler: T)
-    where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
-    {
-        self.add_path(Path::new(path, handler, HTTPMethod::PATCH));
-    }
-
-    pub fn post<T>(&mut self, path: &'static str, handler: T)
-    where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
-    {
-        self.add_path(Path::new(path, handler, HTTPMethod::POST));
-    }
-
-    pub fn put<T>(&mut self, path: &'static str, handler: T)
-    where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
-    {
-        self.add_path(Path::new(path, handler, HTTPMethod::PUT));
-    }
-
-    pub fn trace<T>(&mut self, path: &'static str, handler: T)
-    where
-        T: Fn(HTTPRequest, PathMap) -> HTTPResponse + Send + Sync + 'static,
-    {
-        self.add_path(Path::new(path, handler, HTTPMethod::TRACE));
     }
 
     pub fn on_any<T>(&mut self, handler: T)
