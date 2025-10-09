@@ -29,8 +29,11 @@ The path is an expression that can contains dynamic variables.
 - Basic paths: `/`, `/this/is/a/path`, ...
 - Dynamic path: `/this/is/a/@varibale`, `/this/is/another/#variable`
 
-`#` and `@` are prefixes for dynamic values. `#` for denoting numbers
-and `@` for strings
+`#` and `@` are prefixes for dynamic values.
+
+- `@` for strings
+- `#` for denoting integers (`i32`)
+- `#F` for floats (`f32`)
 
 ```rust
 use mini_server::*;
