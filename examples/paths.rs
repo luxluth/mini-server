@@ -19,5 +19,12 @@ fn main() {
         format!("Hello opa {name}, you are {age}!").into()
     });
 
+    app.get("/format/#Flocation", |_, exprs| {
+        eprintln!("{exprs:?}");
+        let location = expand!(exprs, "location", PathExpr::Float);
+
+        format!("LOACTION = {location}").into()
+    });
+
     app.run();
 }

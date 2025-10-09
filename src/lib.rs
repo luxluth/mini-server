@@ -547,14 +547,14 @@ impl Path {
             let self_part: Vec<_> = self.expr.split('/').filter(|x| !x.is_empty()).collect();
 
             for (o_chunck, s_chunck) in zip(other_part, self_part) {
-                if s_chunck.starts_with('#') {
-                    let name = s_chunck.strip_prefix('#').unwrap().to_string();
-                    let value = o_chunck.parse::<i32>().unwrap();
-                    exprs.insert(name, PathExpr::Number(value));
-                } else if s_chunck.starts_with("#F") {
+                if s_chunck.starts_with("#F") {
                     let name = s_chunck.strip_prefix("#F").unwrap().to_string();
                     let value = o_chunck.parse::<f32>().unwrap();
                     exprs.insert(name, PathExpr::Float(value));
+                } else if s_chunck.starts_with('#') {
+                    let name = s_chunck.strip_prefix('#').unwrap().to_string();
+                    let value = o_chunck.parse::<i32>().unwrap();
+                    exprs.insert(name, PathExpr::Number(value));
                 } else if s_chunck.starts_with('@') {
                     let name = s_chunck.strip_prefix('@').unwrap().to_string();
                     let value = o_chunck.to_string();
@@ -579,14 +579,14 @@ impl Path {
                 false
             } else {
                 for (o_chunck, s_chunck) in zip(other_part, self_part) {
-                    if s_chunck.starts_with('#') {
-                        if o_chunck.parse::<i32>().is_ok() {
+                    if s_chunck.starts_with("#F") {
+                        if o_chunck.parse::<f32>().is_ok() {
                             continue;
                         } else {
                             return false;
                         }
-                    } else if s_chunck.starts_with("#F") {
-                        if o_chunck.parse::<f32>().is_ok() {
+                    } else if s_chunck.starts_with('#') {
+                        if o_chunck.parse::<i32>().is_ok() {
                             continue;
                         } else {
                             return false;
