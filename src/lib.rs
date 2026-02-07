@@ -466,8 +466,8 @@ pub enum HTTPMethod {
 #[derive(Debug, Clone)]
 pub enum PathExpr {
     String(String),
-    Number(i32),
-    Float(f32),
+    Number(i64),
+    Float(f64),
 }
 
 pub struct Path {
@@ -547,13 +547,13 @@ impl Path {
             let self_part: Vec<_> = self.expr.split('/').filter(|x| !x.is_empty()).collect();
 
             for (o_chunck, s_chunck) in zip(other_part, self_part) {
-                if s_chunck.starts_with("#F") {
-                    let name = s_chunck.strip_prefix("#F").unwrap().to_string();
-                    let value = o_chunck.parse::<f32>().unwrap();
+                if s_chunck.starts_with(".") {
+                    let name = s_chunck.strip_prefix(".").unwrap().to_string();
+                    let value = o_chunck.parse::<f64>().unwrap();
                     exprs.insert(name, PathExpr::Float(value));
                 } else if s_chunck.starts_with('#') {
                     let name = s_chunck.strip_prefix('#').unwrap().to_string();
-                    let value = o_chunck.parse::<i32>().unwrap();
+                    let value = o_chunck.parse::<i64>().unwrap();
                     exprs.insert(name, PathExpr::Number(value));
                 } else if s_chunck.starts_with('@') {
                     let name = s_chunck.strip_prefix('@').unwrap().to_string();
@@ -579,14 +579,14 @@ impl Path {
                 false
             } else {
                 for (o_chunck, s_chunck) in zip(other_part, self_part) {
-                    if s_chunck.starts_with("#F") {
-                        if o_chunck.parse::<f32>().is_ok() {
+                    if s_chunck.starts_with(".") {
+                        if o_chunck.parse::<f64>().is_ok() {
                             continue;
                         } else {
                             return false;
                         }
                     } else if s_chunck.starts_with('#') {
-                        if o_chunck.parse::<i32>().is_ok() {
+                        if o_chunck.parse::<i64>().is_ok() {
                             continue;
                         } else {
                             return false;
@@ -687,7 +687,7 @@ pub type Response = Vec<u8>;
 /// - Dynamic path: `/this/is/a/@varibale`, `/this/is/another/#variable`
 ///
 /// `#` and `@` are prefixes for dynamic values. `#` for denoting numbers
-/// and `@` for strings
+/// and `@` for strings. float can start with a dot (`.`)
 pub struct HTTPServer {
     pub addr: Vec<SocketAddr>,
     pub paths: Vec<Path>,

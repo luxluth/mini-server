@@ -2,6 +2,7 @@ use mini_server::*;
 
 fn main() {
     let mut app = HTTPServer::default();
+    let addr = app.addr.clone()[0];
 
     app.get("/", |_, _| "Hello World!".into());
 
@@ -19,11 +20,16 @@ fn main() {
         format!("Hello opa {name}, you are {age}!").into()
     });
 
-    app.get("/format/#Flocation", |_, exprs| {
+    app.get("/format/.location", |_, exprs| {
         eprintln!("{exprs:?}");
         let location = expand!(exprs, "location", PathExpr::Float);
 
         format!("LOACTION = {location}").into()
+    });
+
+
+    app.on_ready(move || {
+        eprintln!("Running on {addr}");
     });
 
     app.run();

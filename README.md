@@ -32,8 +32,8 @@ The path is an expression that can contains dynamic variables.
 `#` and `@` are prefixes for dynamic values.
 
 - `@` for strings
-- `#` for denoting integers (`i32`)
-- `#F` for floats (`f32`)
+- `#` for denoting integers (`i64`)
+- `.` for floats (`f64`)
 
 ```rust
 use mini_server::*;
